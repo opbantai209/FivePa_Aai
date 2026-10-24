@@ -33,6 +33,7 @@ import {
   FileText
 } from 'lucide-react';
 import { Project, UserAccount } from '../../types';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface ProjectSearchViewProps {
   projects: Project[];
@@ -785,9 +786,12 @@ export const ProjectSearchView: React.FC<ProjectSearchViewProps> = ({
                       <div className="flex flex-col md:flex-row md:items-start justify-between gap-4 mb-3">
                         <div className="flex items-start gap-3.5 flex-1">
                           <img
-                            src={proj.buyerAvatar}
+                            src={proj.buyerAvatar || DEFAULT_AVATAR}
                             alt={proj.buyerName}
                             className="w-11 h-11 rounded-full object-cover border border-slate-200 shrink-0 mt-0.5"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
+                            }}
                           />
                           <div className="space-y-1">
                             <div className="flex flex-wrap items-center gap-2">
@@ -943,9 +947,12 @@ export const ProjectSearchView: React.FC<ProjectSearchViewProps> = ({
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex items-center gap-2.5">
                             <img
-                              src={proj.buyerAvatar}
+                              src={proj.buyerAvatar || DEFAULT_AVATAR}
                               alt={proj.buyerName}
                               className="w-9 h-9 rounded-full object-cover border border-slate-200"
+                              onError={(e) => {
+                                (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
+                              }}
                             />
                             <div>
                               <span className="text-xs font-bold text-slate-800 block line-clamp-1">
@@ -1049,9 +1056,12 @@ export const ProjectSearchView: React.FC<ProjectSearchViewProps> = ({
             {/* Modal Header */}
             <div className="flex items-start gap-4">
               <img
-                src={previewProject.buyerAvatar}
+                src={previewProject.buyerAvatar || DEFAULT_AVATAR}
                 alt={previewProject.buyerName}
                 className="w-14 h-14 rounded-full object-cover border-2 border-slate-100 shrink-0"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
+                }}
               />
               <div className="space-y-1 pr-8">
                 <div className="flex items-center gap-2">

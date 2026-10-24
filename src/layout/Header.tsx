@@ -8,6 +8,7 @@ import { PPH_CATEGORIES } from '../components/HeaderCategoriesNav';
 import { slugify } from '../utils/slugify';
 import type { Order, UserAccount } from '../types';
 import { clearAuthToken, getAuthToken } from '../utils/authToken';
+import { DEFAULT_AVATAR } from '../constants';
 
 export interface HeaderProps {
   navigate: (to: string, e?: React.MouseEvent) => void;
@@ -468,7 +469,14 @@ export function Header({
                         className="p-3 hover:bg-slate-50 transition-colors cursor-pointer flex items-start gap-3"
                       >
                         {partnerAvatar ? (
-                          <img src={partnerAvatar} alt={partnerName} className="w-8 h-8 rounded-full object-cover ring-1 ring-slate-200 shrink-0 mt-0.5" />
+                          <img 
+                            src={partnerAvatar || DEFAULT_AVATAR} 
+                            alt={partnerName} 
+                            className="w-8 h-8 rounded-full object-cover ring-1 ring-slate-200 shrink-0 mt-0.5" 
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
+                            }}
+                          />
                         ) : (
                           <div className="w-8 h-8 rounded-full bg-slate-200 text-slate-700 flex items-center justify-center font-bold text-xs shrink-0 mt-0.5">
                             {partnerName.charAt(0).toUpperCase()}
@@ -636,7 +644,14 @@ export function Header({
               className="relative flex items-center gap-1.5 cursor-pointer p-1 rounded-xl hover:bg-slate-100 transition-colors border-none bg-transparent"
             >
               <div className="relative">
-                <img src={currentUser.avatar} alt={currentUser.name} className="w-8 h-8 rounded-full object-cover border border-slate-200" />
+                <img 
+                  src={currentUser.avatar || DEFAULT_AVATAR} 
+                  alt={currentUser.name} 
+                  className="w-8 h-8 rounded-full object-cover border border-slate-200" 
+                  onError={(e) => {
+                    (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
+                  }}
+                />
                 {currentUser.isAvailableNow && (
                   <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border-2 border-white rounded-full animate-pulse" title="Available Now"></span>
                 )}

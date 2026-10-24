@@ -198,6 +198,7 @@ export const WorkstreamSidebar: React.FC<WorkstreamSidebarProps> = ({
                       src={person.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop'}
                       className="w-7 h-7 rounded-full object-cover ring-1 ring-slate-200 shrink-0"
                       alt={person.name}
+                      onError={(e) => { (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150'; }}
                     />
                     <div className="truncate">
                       <div className="text-xs font-bold text-fiverr-dark truncate">

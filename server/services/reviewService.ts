@@ -1,4 +1,4 @@
-import { reviews, users, type Review } from '../store.js';
+import { type Review } from '../store.js';
 import { postgresStore } from '../db/postgresStore.js';
 
 export function isValidIntegerRating(val: unknown): boolean {
@@ -17,17 +17,26 @@ export function isReviewPublic(r: Review): boolean {
   return true;
 }
 
-export function recalculateUserRating(userId: string) {
-  const targetUser = users.find(u => u.id === userId);
-  if (!targetUser) return;
-  const publicUserReviews = reviews.filter(r => r.targetUserId === userId && isReviewPublic(r));
-  targetUser.reviewsCount = publicUserReviews.length;
-  if (publicUserReviews.length > 0) {
-    targetUser.rating = Number((publicUserReviews.reduce((sum, r) => sum + r.rating, 0) / publicUserReviews.length).toFixed(1));
-  } else {
-    targetUser.rating = 0;
+export async function recalculateUserRating(userId: string): Promise<void> {
+  try {
+    const pool = postgresStore.getPool();
+    const res = await pool.query(
+      `SELECT COUNT(*) as count, COALESCE(AVG(rating), 5.0) as avg_rating
+       FROM reviews
+       WHERE target_user_id = $1
+         AND is_cancelled_order = false
+         AND (moderation_status = 'approved' OR moderation_status IS NULL)`,
+      [userId]
+    );
+    const count = Number(res.rows[0]?.count || 0);
+    const avg = count > 0 ? Number(Number(res.rows[0]?.avg_rating).toFixed(1)) : 5.0;
+    await pool.query(
+      'UPDATE users SET reviews_count = $1, rating = $2 WHERE id = $3',
+      [count, avg, userId]
+    );
+  } catch (err) {
+    console.error(`[reviewService] Error recalculating rating for user ${userId}:`, err);
   }
-  postgresStore.saveUsers(users).catch(err => console.error('[PostgresStore] Failed to save users after rating recalculation:', err));
 }
 
 export function sanitizePublicReview(r: Review): Review {

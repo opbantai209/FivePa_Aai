@@ -32,12 +32,12 @@ export function Footer({ navigate }: FooterProps) {
           <h4 className="text-xs font-semibold text-fiverr-dark uppercase tracking-wider mb-5">Browse Categories</h4>
           <ul className="space-y-3 text-sm text-fiverr-dark">
             <li>
-              <a href="/categories/development-it" onClick={(e) => navigate('/categories/development-it', e)} className="hover:text-fiverr-dark transition-colors">
+              <a href="/categories/technology-programming" onClick={(e) => navigate('/categories/technology-programming', e)} className="hover:text-fiverr-dark transition-colors">
                 Development & IT
               </a>
             </li>
             <li>
-              <a href="/categories/ai-data" onClick={(e) => navigate('/categories/ai-data', e)} className="hover:text-fiverr-dark transition-colors">
+              <a href="/categories/ai-services" onClick={(e) => navigate('/categories/ai-services', e)} className="hover:text-fiverr-dark transition-colors">
                 AI & Data Science
               </a>
             </li>

@@ -63,6 +63,9 @@ export interface Gig {
   rating: number;
   reviewsCount: number;
   image: string;
+  coverImage?: string;
+  gallery?: string[];
+  tags?: string[];
   status: 'published' | 'draft' | 'suspended' | 'paused' | 'pending' | 'declined';
   featured: boolean;
   featuredUntil?: string;
@@ -83,6 +86,9 @@ export interface Project {
   description: string;
   budgetMin: number;
   budgetMax: number;
+  budget?: number;
+  budgetType?: 'fixed' | 'hourly';
+  duration?: string;
   deadlineDays: number;
   proposalsCount: number;
   createdAt: string;
@@ -160,6 +166,7 @@ export interface Workspace {
   createdAt: string;
   status: 'active' | 'archived';
   activeOrderId?: string;
+  orderIds?: string[];
 }
 
 export interface GigOrder extends Order {
@@ -552,6 +559,8 @@ export interface WorkstreamUploadRecord {
   size?: number;
   createdAt: string;
   sha256?: string;
+  orderId?: string;
+  workspaceId?: string;
 }
 
 export interface AppNotification {

@@ -1,0 +1,443 @@
+FIVEPA / WORK-PER-HOUR
+PLATFORM RULES & USER-FRIENDLY MARKETPLACE PRINCIPLES
+Version: October 2026
+
+============================================================
+1. CORE PLATFORM PRINCIPLE
+============================================================
+
+The platform is a friendly marketplace for buyers and sellers.
+
+OPEN MARKETPLACE
+      |
+      v
++-------------------+
+| Buyers & Sellers  |
+| can interact      |
++-------------------+
+      |
+      +----> Chat stays open
+      +----> Offers/proposals remain flexible
+      +----> Orders can be completed/cancelled
+      +----> New work can be proposed afterward
+      |
+      v
+Only explicit, necessary rules are enforced.
+
+IMPORTANT: Do not invent extra restrictions, validations, workflow
+blocks, or business rules that were not agreed upon.
+
+============================================================
+2. BUYER-FRIENDLY RULES
+============================================================
+
+Buyers should be able to:
+- Search and discover freelancers freely.
+- View public freelancer profiles, gigs, projects and relevant public information.
+- Chat with sellers.
+- Discuss requirements and negotiate work.
+- Receive proposals/offers.
+- Accept or decline offers.
+- Pay invoices/offers through the supported payment flow.
+- Request revisions where the existing workflow allows them.
+- Use delivery, escrow, dispute, refund and review workflows provided by the platform.
+- Continue communicating after an order is completed or cancelled.
+- Start new work with the same seller after an earlier order is completed or cancelled.
+
+There should be no unnecessary buyer-side restrictions.
+
+============================================================
+3. SELLER-FRIENDLY RULES
+============================================================
+
+Sellers should be able to:
+- Create and publish marketplace offerings.
+- Receive buyer messages.
+- Chat freely with buyers.
+- Create proposals for new work.
+- Send corrected/new proposals after an earlier order or proposal has been completed or cancelled.
+- Deliver work.
+- Respond to revision requests.
+- Use the supported escrow, payment, dispute, refund and review workflows.
+- Continue communicating after an order is completed or cancelled.
+- Start a new job with the same buyer after a previous job ends.
+
+There should be no unnecessary seller-side restrictions.
+
+============================================================
+4. CHAT RULE
+============================================================
+
+CHAT IS OPEN.
+
+Order state must not unnecessarily shut down communication.
+
+ORDER STATUS
+    |
+    +-- pending
+    +-- accepted
+    +-- funded
+    +-- in progress
+    +-- delivered
+    +-- completed
+    +-- cancelled
+    |
+    v
++------------------+
+| CHAT REMAINS     |
+| AVAILABLE        |
++------------------+
+
+The fact that an order is completed or cancelled does NOT by itself
+mean that buyer and seller should lose their conversation.
+
+============================================================
+5. PROPOSAL / NEW WORK RULE
+============================================================
+
+A seller may create a new proposal for new work after a previous order/
+proposal has been completed or cancelled.
+
+Do NOT automatically expire old historical proposals merely because an
+order has completed.
+
+Do NOT block a seller from starting new work with a buyer merely because
+they previously worked together.
+
+ONE EXPLICIT WORKFLOW RULE:
+
+If a previous invoice is still PENDING, a new proposal/invoice must not
+bypass that pending-invoice state.
+
+Previous invoice
+      |
+      v
+Is it pending?
+   /       \
+ YES        NO
+  |          |
+  v          v
+Do not     New proposal
+bypass     is allowed
+pending    after prior
+invoice    work ends
+
+Once the previous invoice is completed/cancelled according to the
+existing workflow, normal new-work flexibility returns.
+
+============================================================
+6. COMPLETED / CANCELLED ORDERS
+============================================================
+
+Completed and cancelled orders are historical transaction states.
+They should not unnecessarily prevent future marketplace activity.
+
+Allowed:
+  Old order -> completed -> new proposal -> new order
+  Old order -> cancelled -> corrected/new proposal -> new order
+
+Not allowed:
+  Old pending invoice -> silently bypass it with another proposal
+
+Do not introduce additional blocks beyond the explicitly agreed rule.
+
+============================================================
+7. PAYMENT & INVOICE EXPERIENCE
+============================================================
+
+Payment failures must be visible to the user.
+The UI must not falsely behave as though payment succeeded when it did not.
+
+Operation -> Failed -> Show error -> Preserve relevant input -> Keep
+relevant modal/form open when appropriate -> User can correct/retry
+
+A failed payment or financial operation must not silently close the
+relevant UI and make the user believe the transaction succeeded.
+
+============================================================
+8. ESCROW PRINCIPLE
+============================================================
+
+Escrow state must correspond to the actual financial state.
+
+Buyer payment
+     |
+     v
++-------------+
+| Escrow      |
+| funded      |
++------+------+ 
+       |
+       v
+   Work / delivery
+       |
+       +--> revision / dispute where applicable
+       |
+       v
+   Settlement
+    /      \
+ Release   Refund
+    \      /
+     v    v
+ Ledger / transaction records
+
+Partial settlement/refund is supported where the existing financial
+workflow provides it.
+
+Do not replace an existing partial-settlement mechanism with an
+unnecessary all-or-nothing rule.
+
+============================================================
+9. REVISION & DELIVERY EXPERIENCE
+============================================================
+
+The marketplace should allow normal buyer/seller collaboration.
+
+Delivery
+   |
+   +--> Accept / complete
+   |
+   +--> Request revision
+             |
+             v
+        New delivery
+             |
+             v
+        Completion
+
+If a submission fails, the user should receive an error and retain
+relevant work/input rather than being silently pushed out of the workflow.
+
+============================================================
+10. DISPUTE & REFUND EXPERIENCE
+============================================================
+
+Dispute/refund workflows should protect the actual transaction while
+remaining usable and understandable.
+
+Rules already supported by the platform should remain available,
+including partial settlement where applicable.
+
+Do not create extra restrictions on buyers or sellers merely to make
+the implementation simpler.
+
+============================================================
+11. REVIEWS
+============================================================
+
+Review comments must remain unrestricted/verbatim:
+- Any words.
+- Any numbers.
+- Any punctuation.
+- Any symbols.
+- Emojis.
+- Mixed characters.
+- Any language.
+- Any format supported by the existing input system.
+
+The numeric rating is separate and uses the existing 1-5 rating system.
+
+Review
+  |
+  +---- Comment: unrestricted text
+  |
+  +---- Rating: existing 1-5 system
+
+Do not invent content restrictions for review comments.
+
+============================================================
+12. PUBLIC MARKETPLACE DATA
+============================================================
+
+Public pages/search results should expose only information genuinely
+needed for public marketplace display.
+
+Private/sensitive account data must not be exposed publicly.
+
+USER RECORD
+    |
+    +-------------------+
+    |                   |
+    v                   v
+PUBLIC DATA         PRIVATE DATA
+    |                   |
+    v                   v
+Marketplace pages   Private/admin use
+Search/profile      Never public
+Gig/project display
+
+Private examples include email, mobile number, wallet balance, earnings,
+private flags, internal verification/status data, and other private account data.
+
+Public freelancer/user search should return eligible public users, not
+internal/support/admin/super-admin accounts.
+
+============================================================
+13. ADMIN / INTERNAL DATA
+============================================================
+
+Admin and private serializers/flows are separate from public marketplace
+serializers.
+
+Do not weaken admin/private functionality merely to simplify public data handling.
+
+Do not expose raw private user records through public endpoints.
+
+============================================================
+14. FRIENDLY MARKETPLACE PRINCIPLE
+============================================================
+
+The platform should feel like a normal human marketplace, not a
+locked-down workflow engine.
+
+Buyer <--------------------> Seller
+       open conversation
+              |
+      flexible negotiation
+              |
+           proposal
+              |
+            invoice
+              |
+           payment
+              |
+             work
+              |
+       delivery / revision
+              |
+      completion / refund
+              |
+    future work remains open
+
+Avoid unnecessary:
+"You cannot..."
+"You must wait..."
+"This user is blocked..."
+"This chat is closed..."
+"You cannot create another job..."
+"This old order prevents new work..."
+
+unless the restriction is explicitly required by agreed business rules
+or is necessary to protect security/financial integrity.
+
+============================================================
+15. NO INVENTED BUSINESS RULES
+============================================================
+
+ONLY implement agreed requirements.
+
+Do not add:
+- Unrequested buyer restrictions.
+- Unrequested seller restrictions.
+- Arbitrary proposal limits.
+- Arbitrary chat shutdowns.
+- Arbitrary upload restrictions.
+- Arbitrary review-content restrictions.
+- Automatic expiry of historical offers without an agreed reason.
+- New approval gates.
+- New workflow states.
+- New validation rules that change existing marketplace behaviour.
+
+If a potential restriction is discovered during development, discuss and
+approve it before turning it into a product rule.
+
+============================================================
+16. SECURITY WITHOUT HURTING NORMAL MARKETPLACE USE
+============================================================
+
+Security fixes are required when they protect authentication,
+authorization, private data, payments, escrow, wallets, transactions,
+refunds, payouts, or admin/internal systems.
+
+But security fixes should not be used as an excuse to invent unrelated
+marketplace restrictions.
+
+SECURITY + FINANCIAL INTEGRITY + USER FREEDOM = FRIENDLY MARKETPLACE
+
+============================================================
+17. EXISTING WORKFLOW RULES TO PRESERVE
+============================================================
+
+1. Chat remains available after completed/cancelled Workstreams.
+2. Sellers can create new proposals after previous work is completed/cancelled.
+3. Sellers can issue a corrected/new proposal after a previous invoice/order is cancelled.
+4. A pending invoice must not be silently bypassed by a new proposal where the existing business rule says it must remain pending.
+5. Partial escrow settlement/refund remains supported.
+6. Payment errors remain visible.
+7. Review comments remain unrestricted/verbatim.
+8. Public data remains separated from private account data.
+9. Existing marketplace functionality should not be rewritten without a specific reason.
+10. Do not refactor unrelated code while applying targeted fixes.
+
+============================================================
+18. SIMPLE DECISION DIAGRAM
+============================================================
+
++----------------------+
+| Buyer & Seller meet  |
++----------+-----------+
+           |
+           v
+      +---------+
+      |  Chat   |
+      +----+----+
+           |
+           v
+   +---------------+
+   | Proposal/Work |
+   +-------+-------+
+           |
+   Is invoice pending?
+       /          \
+     YES           NO
+      |             |
+      v             v
+ Do not bypass   New work
+ pending invoice allowed
+      |             |
+      +------+------+ 
+             |
+             v
+    Normal marketplace
+        continues
+
+============================================================
+19. PRODUCT PHILOSOPHY
+============================================================
+
+The platform should be:
+- Friendly.
+- Flexible.
+- Understandable.
+- Marketplace-first.
+- Buyer-friendly.
+- Seller-friendly.
+- Secure.
+- Financially accurate.
+- Open to repeat business.
+- Protective of private information.
+- Free from unnecessary workflow restrictions.
+
+The rule is NOT "no security".
+The rule is: NO UNNECESSARY USER RESTRICTIONS.
+
+Protect users, money and private data while keeping normal buying,
+selling, communication and repeat business as open as possible.
+
+============================================================
+20. FINAL IMPLEMENTATION RULE
+============================================================
+
+When fixing bugs or implementing features:
+1. Preserve existing marketplace behaviour.
+2. Fix the confirmed issue.
+3. Do not invent a new business rule.
+4. Do not unnecessarily restrict buyers.
+5. Do not unnecessarily restrict sellers.
+6. Keep chat open unless an explicitly agreed rule says otherwise.
+7. Keep repeat business open after completed/cancelled work.
+8. Protect private and financial data.
+9. Keep payment/escrow/ledger state accurate.
+10. Change only what is required.
+
+END OF PLATFORM RULES

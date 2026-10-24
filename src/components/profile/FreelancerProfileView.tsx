@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { UserAccount, Gig, Review } from '../../types';
 import { Reviews } from '../gig_reviews';
+import { DEFAULT_AVATAR, DEFAULT_GIG_IMAGE } from '../../constants';
 
 interface FreelancerProfileViewProps {
   profileUser: UserAccount;
@@ -68,9 +69,11 @@ export const FreelancerProfileView: React.FC<FreelancerProfileViewProps> = ({
   }, [userReviews, profileUser.rating]);
 
   const handleShare = () => {
-    navigator.clipboard.writeText(window.location.href);
-    setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    if (typeof window !== 'undefined') {
+      navigator.clipboard.writeText(window.location.href);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2000);
+    }
   };
 
   return (
@@ -83,9 +86,12 @@ export const FreelancerProfileView: React.FC<FreelancerProfileViewProps> = ({
           <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6 text-center sm:text-left">
             <div className="relative">
               <img
-                src={profileUser.avatar}
+                src={profileUser.avatar || DEFAULT_AVATAR}
                 alt={profileUser.name}
                 className="w-24 h-24 sm:w-28 sm:h-28 rounded-2xl object-cover ring-4 ring-slate-100 shadow-md"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
+                }}
               />
               {profileUser.isAvailableNow && (
                 <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-emerald-500 border-2 border-white ring-2 ring-emerald-500/20" title="Available for work now" />
@@ -294,14 +300,17 @@ export const FreelancerProfileView: React.FC<FreelancerProfileViewProps> = ({
               {filteredGigs.map((gig) => (
                 <div
                   key={gig.id}
-                  onClick={(e) => onNavigate(`gig_${gig.id}`, e)}
+                  onClick={(e) => onNavigate(`/gig/${gig.id}`, e)}
                   className="bg-white border border-slate-200 rounded-2xl overflow-hidden hover:shadow-lg hover:border-slate-300 transition duration-200 cursor-pointer flex flex-col group"
                 >
                   <div className="aspect-video bg-slate-100 relative overflow-hidden">
                     <img
-                      src={gig.image}
+                      src={gig.image || DEFAULT_GIG_IMAGE}
                       alt={gig.title}
                       className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE;
+                      }}
                     />
                     {gig.featured && (
                       <span className="absolute top-2.5 left-2.5 px-2 py-0.5 bg-amber-500 text-white text-[10px] font-black rounded-md tracking-wider uppercase shadow-xs">

@@ -1,52 +1,115 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 import { Router, Request, Response } from 'express';
 import { randomUUID } from 'crypto';
-import { gigs, users, type Gig } from '../store.js';
 import { postgresStore } from '../db/postgresStore.js';
 import { isGigPublic, sanitizePublicGig } from '../publicData.js';
 import {
   requireAuth,
   requireActiveStatus,
+  requireAdmin,
+  adminActor,
   resolveAuthenticatedUserId,
   escapeHtml
 } from '../middleware/auth.js';
 import { siteSettings } from '../../src/server/siteSettings.js';
-import { financeLedger } from '../../src/server/financeLedger.js';
+import { financialTransactionService } from '../services/financialService.js';
 import { registerAuditLog } from '../services/orderService.js';
+import { diagnosticService } from '../services/diagnosticService.js';
+import type { Gig } from '../../src/types.js';
 
 export const gigRouter = Router();
 
+function formatGigRow(r: any): Gig {
+  return {
+    id: r.id,
+    freelancerId: r.freelancer_id,
+    freelancerName: r.freelancer_name,
+    freelancerUsername: r.freelancer_username || r.freelancer_name?.toLowerCase().replace(/\s+/g, '_'),
+    freelancerAvatar: r.freelancer_avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+    freelancerLevel: r.freelancer_level || 'Level 1 ★',
+    title: r.title,
+    slug: r.slug || r.title?.toLowerCase().trim().replace(/[^\w\s-]/g, '').replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, ''),
+    category: r.category,
+    subcategory: r.subcategory || 'General',
+    description: r.description,
+    price: Number(r.price),
+    deliveryDays: Number(r.delivery_days || 7),
+    rating: Number(r.rating || 0),
+    reviewsCount: Number(r.reviews_count || 0),
+    image: r.image || 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=800&h=500&fit=crop',
+    coverImage: r.cover_image || undefined,
+    gallery: r.gallery || [],
+    tags: r.tags || [],
+    status: r.status,
+    featured: Boolean(r.featured),
+    featuredUntil: r.featured_until || undefined,
+    extras: typeof r.extras === 'string' ? JSON.parse(r.extras) : (r.extras || []),
+    moderationStatus: r.moderation_status || 'approved',
+    moderationNotes: r.moderation_notes || undefined
+  };
+}
+
 // Public gigs list
-gigRouter.get('/gigs', (req: Request, res: Response) => {
-  const publicGigs = gigs.filter(isGigPublic).map(sanitizePublicGig);
-  res.json(publicGigs);
+gigRouter.get('/gigs', async (req: Request, res: Response) => {
+  try {
+    const resDb = await postgresStore.getPool().query("SELECT * FROM gigs WHERE status = 'published'");
+    const rawGigs = resDb.rows.map(formatGigRow);
+    const publicGigs = rawGigs.filter(isGigPublic).map(sanitizePublicGig);
+    res.json(publicGigs);
+  } catch (err) {
+    console.error('[GET /gigs] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch gigs' });
+  }
 });
 
 // Single Gig Detail
-gigRouter.get('/gigs/:id', (req: Request, res: Response) => {
-  const gig = gigs.find(g => g.id === req.params.id);
-  if (!gig) return res.status(404).json({ error: 'Gig not found' });
+gigRouter.get('/gigs/:id', async (req: Request, res: Response) => {
+  try {
+    const pool = postgresStore.getPool();
+    const result = await pool.query('SELECT * FROM gigs WHERE id = $1', [req.params.id]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Gig not found' });
+    const gig = formatGigRow(result.rows[0]);
 
-  const authUserId = resolveAuthenticatedUserId(req);
-  const caller = authUserId ? users.find(u => u.id === authUserId) : null;
-  const isAdmin = caller?.role === 'admin' || caller?.role === 'super_admin';
-  const isOwner = authUserId && gig.freelancerId === authUserId;
+    const authUserId = resolveAuthenticatedUserId(req);
+    let callerRole = null;
+    if (authUserId) {
+      const userRes = await pool.query('SELECT role FROM users WHERE id = $1', [authUserId]);
+      if (userRes.rows.length > 0) callerRole = userRes.rows[0].role;
+    }
+    const isAdmin = callerRole === 'admin' || callerRole === 'super_admin';
+    const isOwner = authUserId && gig.freelancerId === authUserId;
 
-  if (isGigPublic(gig)) {
-    if (isAdmin || isOwner) return res.json(gig);
-    return res.json(sanitizePublicGig(gig));
+    if (isGigPublic(gig)) {
+      if (isAdmin || isOwner) return res.json(gig);
+      return res.json(sanitizePublicGig(gig));
+    }
+
+    if (isAdmin || isOwner) {
+      return res.json(gig);
+    }
+    return res.status(404).json({ error: 'Gig not found or unavailable' });
+  } catch (err) {
+    console.error('[GET /gigs/:id] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch gig detail' });
   }
-
-  if (isAdmin || isOwner) {
-    return res.json(gig);
-  }
-  return res.status(404).json({ error: 'Gig not found or unavailable' });
 });
 
 // Authenticated Owner Listings
-gigRouter.get('/my/gigs', requireAuth, (req: Request, res: Response) => {
-  const authUserId = (req as any).authenticatedUserId;
-  const myGigs = gigs.filter(g => g.freelancerId === authUserId);
-  res.json(myGigs);
+gigRouter.get('/my/gigs', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const authUserId = (req as any).authenticatedUserId;
+    const pool = postgresStore.getPool();
+    const result = await pool.query('SELECT * FROM gigs WHERE freelancer_id = $1 ORDER BY created_at DESC', [authUserId]);
+    const myGigs = result.rows.map(formatGigRow);
+    res.json(myGigs);
+  } catch (err) {
+    console.error('[GET /my/gigs] Error:', err);
+    res.status(500).json({ error: 'Failed to fetch user gigs' });
+  }
 });
 
 // Create Gig
@@ -102,177 +165,183 @@ gigRouter.post('/gigs', requireAuth, requireActiveStatus, async (req: Request, r
     image,
     status: initialStatus,
     featured: false,
-    extras
+    extras,
+    moderationStatus: activeSettings.marketplace.gigModerationRequired ? 'pending' : 'approved'
   };
-  gigs.unshift(newGig);
+
   try {
-    await postgresStore.saveGigs(gigs);
+    const pool = postgresStore.getPool();
+    await pool.query(
+      `INSERT INTO gigs (id, freelancer_id, freelancer_name, freelancer_username, freelancer_avatar, freelancer_level, title, slug, category, subcategory, description, price, delivery_days, rating, reviews_count, image, status, featured, extras, moderation_status, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW())`,
+      [
+        newGig.id, newGig.freelancerId, newGig.freelancerName, newGig.freelancerUsername, newGig.freelancerAvatar,
+        newGig.freelancerLevel, newGig.title, newGig.slug, newGig.category, newGig.subcategory, newGig.description,
+        newGig.price, newGig.deliveryDays, newGig.rating, newGig.reviewsCount, newGig.image, newGig.status,
+        newGig.featured, JSON.stringify(newGig.extras), newGig.moderationStatus
+      ]
+    );
+    res.json(newGig);
   } catch (err) {
-    console.error('[CreateGig] Failed to persist:', err);
-    const idx = gigs.findIndex(g => g.id === newGig.id);
-    if (idx !== -1) gigs.splice(idx, 1);
-    return res.status(500).json({ error: 'Could not save. Please try again.' });
+    console.error('[CreateGig] Failed to persist to PostgreSQL:', err);
+    res.status(500).json({ error: 'Could not save gig. Please try again.' });
   }
-  res.json(newGig);
 });
 
 // Update Gig
-gigRouter.patch('/gigs/:id', requireAuth, requireActiveStatus, (req: Request, res: Response) => {
+gigRouter.patch('/gigs/:id', requireAuth, requireActiveStatus, async (req: Request, res: Response) => {
   const caller = (req as any).authenticatedUser;
-  const g = gigs.find(gig => gig.id === req.params.id);
-  if (!g) return res.status(404).json({ error: 'Gig/Service not found' });
-  if (g.freelancerId !== caller.id) {
-    return res.status(403).json({ error: 'Forbidden: You can only edit your own gigs.' });
-  }
+  try {
+    const pool = postgresStore.getPool();
+    const findRes = await pool.query('SELECT * FROM gigs WHERE id = $1', [req.params.id]);
+    if (findRes.rows.length === 0) return res.status(404).json({ error: 'Gig/Service not found' });
+    const g = formatGigRow(findRes.rows[0]);
 
-  if (req.body.title !== undefined) g.title = escapeHtml(req.body.title);
-  if (req.body.category !== undefined && typeof req.body.category === 'string') g.category = req.body.category.trim().slice(0, 100);
-  if (req.body.subcategory !== undefined && typeof req.body.subcategory === 'string') g.subcategory = req.body.subcategory.trim().slice(0, 100);
-  if (req.body.description !== undefined) g.description = escapeHtml(req.body.description);
-  if (req.body.price !== undefined) {
-    const newPrice = Number(req.body.price);
-    if (!Number.isFinite(newPrice)) return res.status(400).json({ error: 'Gig price must be a valid number.' });
-    const activeSettings = siteSettings.getSettings();
-    const minGigPrice = activeSettings.marketplace.minimumGigPrice ?? 5;
-    const maxGigPrice = activeSettings.marketplace.maximumGigPrice ?? 10000;
-    if (newPrice < minGigPrice) {
-      return res.status(400).json({ error: `Gig price ($${newPrice}) cannot be lower than the platform minimum of $${minGigPrice}.` });
-    }
-    if (newPrice > maxGigPrice) {
-      return res.status(400).json({ error: `Gig price ($${newPrice}) cannot exceed the platform maximum of $${maxGigPrice}.` });
-    }
-    g.price = newPrice;
-  }
-  if (req.body.deliveryDays !== undefined) {
-    g.deliveryDays = Math.min(365, Math.max(1, Math.round(Number(req.body.deliveryDays)) || 7));
-  }
-  if (req.body.extras !== undefined && Array.isArray(req.body.extras)) {
-    g.extras = req.body.extras.slice(0, 20).map((ex: any, idx: number) => ({
-      id: String(ex?.id || `extra_${Date.now()}_${idx}`),
-      title: String(ex?.title || '').slice(0, 200),
-      price: Math.round(Math.min(100000, Math.max(0, Number(ex?.price) || 0)) * 100) / 100
-    }));
-  }
-  if (req.body.image !== undefined && typeof req.body.image === 'string') {
-    const defaultImage = 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&h=500&fit=crop';
-    g.image = /^\s*(javascript:|vbscript:|data:(?!image\/))/i.test(req.body.image) ? defaultImage : req.body.image;
-  }
-
-  delete req.body.moderationStatus;
-  delete req.body.moderationNotes;
-  delete req.body.featured;
-  delete req.body.featuredUntil;
-
-  if (req.body.status !== undefined) {
-    const requestedStatus = String(req.body.status).toLowerCase().trim();
-    if (!['published', 'paused', 'draft'].includes(requestedStatus)) {
-      return res.status(400).json({ error: 'Invalid status. Sellers can only set status to published, paused, or draft.' });
+    if (g.freelancerId !== caller.id) {
+      return res.status(403).json({ error: 'Forbidden: You can only edit your own gigs.' });
     }
 
-    if (requestedStatus === 'published' && (g.moderationStatus === 'rejected' || g.moderationStatus === 'flagged')) {
-      return res.status(400).json({ error: 'This gig has been rejected or flagged by moderators and cannot be published until reviewed and approved by an administrator.' });
+    let title = g.title;
+    let category = g.category;
+    let subcategory = g.subcategory;
+    let description = g.description;
+    let price = g.price;
+    let deliveryDays = g.deliveryDays;
+    let extras = g.extras;
+    let image = g.image;
+    let status = g.status;
+    let moderationStatus = g.moderationStatus;
+
+    if (req.body.title !== undefined) title = escapeHtml(req.body.title);
+    if (req.body.category !== undefined && typeof req.body.category === 'string') category = req.body.category.trim().slice(0, 100);
+    if (req.body.subcategory !== undefined && typeof req.body.subcategory === 'string') subcategory = req.body.subcategory.trim().slice(0, 100);
+    if (req.body.description !== undefined) description = escapeHtml(req.body.description);
+    if (req.body.price !== undefined) {
+      const newPrice = Number(req.body.price);
+      if (!Number.isFinite(newPrice)) return res.status(400).json({ error: 'Gig price must be a valid number.' });
+      const activeSettings = siteSettings.getSettings();
+      const minGigPrice = activeSettings.marketplace.minimumGigPrice ?? 5;
+      const maxGigPrice = activeSettings.marketplace.maximumGigPrice ?? 10000;
+      if (newPrice < minGigPrice) {
+        return res.status(400).json({ error: `Gig price ($${newPrice}) cannot be lower than the platform minimum of $${minGigPrice}.` });
+      }
+      if (newPrice > maxGigPrice) {
+        return res.status(400).json({ error: `Gig price ($${newPrice}) cannot exceed the platform maximum of $${maxGigPrice}.` });
+      }
+      price = newPrice;
+    }
+    if (req.body.deliveryDays !== undefined) {
+      deliveryDays = Math.min(365, Math.max(1, Math.round(Number(req.body.deliveryDays)) || 7));
+    }
+    if (req.body.extras !== undefined && Array.isArray(req.body.extras)) {
+      extras = req.body.extras.slice(0, 20).map((ex: any, idx: number) => ({
+        id: String(ex?.id || `extra_${Date.now()}_${idx}`),
+        title: String(ex?.title || '').slice(0, 200),
+        price: Math.round(Math.min(100000, Math.max(0, Number(ex?.price) || 0)) * 100) / 100
+      }));
+    }
+    if (req.body.image !== undefined && typeof req.body.image === 'string') {
+      const defaultImage = 'https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=800&h=500&fit=crop';
+      image = /^\s*(javascript:|vbscript:|data:(?!image\/))/i.test(req.body.image) ? defaultImage : req.body.image;
     }
 
-    const activeSettings = siteSettings.getSettings();
-    if (requestedStatus === 'published' && activeSettings.marketplace?.gigModerationRequired && g.moderationStatus !== 'approved') {
-      g.status = 'pending';
-      g.moderationStatus = 'pending';
-    } else {
-      g.status = requestedStatus as any;
+    if (req.body.status !== undefined) {
+      const requestedStatus = String(req.body.status).toLowerCase().trim();
+      if (!['published', 'paused', 'draft'].includes(requestedStatus)) {
+        return res.status(400).json({ error: 'Invalid status. Sellers can only set status to published, paused, or draft.' });
+      }
+
+      if (requestedStatus === 'published' && (moderationStatus === 'rejected' || moderationStatus === 'flagged')) {
+        return res.status(400).json({ error: 'This gig has been rejected or flagged by moderators and cannot be published until reviewed and approved by an administrator.' });
+      }
+
+      const activeSettings = siteSettings.getSettings();
+      if (requestedStatus === 'published' && activeSettings.marketplace?.gigModerationRequired && moderationStatus !== 'approved') {
+        status = 'pending';
+        moderationStatus = 'pending';
+      } else {
+        status = requestedStatus as any;
+      }
     }
+
+    await pool.query(
+      `UPDATE gigs SET title = $1, category = $2, subcategory = $3, description = $4, price = $5, delivery_days = $6, extras = $7, image = $8, status = $9, moderation_status = $10 WHERE id = $11`,
+      [title, category, subcategory, description, price, deliveryDays, JSON.stringify(extras), image, status, moderationStatus, req.params.id]
+    );
+
+    const updatedGig = { ...g, title, category, subcategory, description, price, deliveryDays, extras, image, status, moderationStatus };
+
+    registerAuditLog({
+      id: 'log_' + Date.now(),
+      actor: caller.name,
+      role: caller.role,
+      action: 'GIG_UPDATED',
+      target: `Gig "${title}"`,
+      details: `Updated gig details/status to "${status}" (moderation: ${moderationStatus || 'approved'})`,
+      timestamp: new Date().toLocaleString()
+    });
+
+    res.json(updatedGig);
+  } catch (err) {
+    console.error('[UpdateGig] Error:', err);
+    res.status(500).json({ error: 'Failed to update gig' });
   }
-
-  postgresStore.saveGigs(gigs);
-
-  registerAuditLog({
-    id: 'log_' + Date.now(),
-    actor: caller.name,
-    role: caller.role,
-    action: 'GIG_UPDATED',
-    target: `Gig "${g.title}"`,
-    details: `Updated gig details/status to "${g.status}" (moderation: ${g.moderationStatus || 'approved'})`,
-    timestamp: new Date().toLocaleString()
-  });
-
-  res.json(g);
 });
 
 // Delete Gig
-gigRouter.delete('/gigs/:id', requireAuth, requireActiveStatus, (req: Request, res: Response) => {
+gigRouter.delete('/gigs/:id', requireAuth, requireActiveStatus, async (req: Request, res: Response) => {
   const caller = (req as any).authenticatedUser;
-  const index = gigs.findIndex(gig => gig.id === req.params.id);
-  if (index === -1) return res.status(404).json({ error: 'Gig/Service not found' });
+  try {
+    const pool = postgresStore.getPool();
+    const findRes = await pool.query('SELECT * FROM gigs WHERE id = $1', [req.params.id]);
+    if (findRes.rows.length === 0) return res.status(404).json({ error: 'Gig/Service not found' });
+    const g = formatGigRow(findRes.rows[0]);
 
-  const deleted = gigs[index];
-  if (deleted.freelancerId !== caller.id) {
-    return res.status(403).json({ error: 'Forbidden: You can only delete your own gigs.' });
+    if (g.freelancerId !== caller.id) {
+      return res.status(403).json({ error: 'Forbidden: You can only delete your own gigs.' });
+    }
+
+    await pool.query('DELETE FROM gigs WHERE id = $1', [req.params.id]);
+
+    registerAuditLog({
+      id: 'log_' + Date.now(),
+      actor: caller.name,
+      role: caller.role,
+      action: 'GIG_DELETED',
+      target: `Gig "${g.title}"`,
+      details: `Permanently deleted freelancer gig #${g.id} by ${g.freelancerName}`,
+      timestamp: new Date().toLocaleString()
+    });
+
+    res.json({ success: true, id: g.id });
+  } catch (err) {
+    console.error('[DeleteGig] Error:', err);
+    res.status(500).json({ error: 'Failed to delete gig' });
   }
-
-  gigs.splice(index, 1);
-  postgresStore.saveGigs(gigs);
-
-  registerAuditLog({
-    id: 'log_' + Date.now(),
-    actor: 'Freelancer / User',
-    role: 'freelancer',
-    action: 'GIG_DELETED',
-    target: `Gig "${deleted.title}"`,
-    details: `Permanently deleted freelancer gig #${deleted.id} by ${deleted.freelancerName}`,
-    timestamp: new Date().toLocaleString()
-  });
-
-  res.json({ success: true, id: deleted.id });
 });
 
 // Feature Gig
-gigRouter.patch('/gigs/:id/feature', requireAuth, requireActiveStatus, (req: Request, res: Response) => {
+gigRouter.patch('/gigs/:id/feature', requireAuth, requireActiveStatus, async (req: Request, res: Response) => {
   const caller = (req as any).authenticatedUser;
-  const g = gigs.find(gig => gig.id === req.params.id);
-  if (!g) return res.status(404).json({ error: 'Gig/Service not found' });
-  if (g.freelancerId !== caller.id) {
-    return res.status(403).json({ error: 'Forbidden: You can only feature your own gigs.' });
-  }
-
-  if (g.featured && g.featuredUntil && new Date(g.featuredUntil) > new Date()) {
-    return res.status(400).json({ error: 'Gig is already actively featured.' });
-  }
-
-  const activeSettings = siteSettings.getSettings();
-  const fee = activeSettings.marketplace.featuredGigFee;
-  if (!fee || fee <= 0) {
-    return res.status(500).json({ error: 'Feature fee is not configured.' });
-  }
-
-  const idempotencyKey = `feat_${g.id}_${Date.now()}`;
   try {
-    financeLedger.postJournal({
-      reference: `Featured Gig: ${g.id}`,
-      description: `Feature fee for gig: ${g.title}`,
-      eventType: 'ADMIN_ADJUSTMENT_DEBIT',
-      idempotencyKey,
-      actor: caller.name,
-      entries: [
-        { accountCode: '2020', accountName: 'Freelancer Wallets Payable', debit: fee, credit: 0, currency: 'USD', description: 'Feature fee', userId: caller.id },
-        { accountCode: '4010', accountName: 'Marketplace Platform Commission Fee', debit: 0, credit: fee, currency: 'USD', description: `Featured gig revenue: ${g.title}` }
-      ]
+    const activeSettings = siteSettings.getSettings();
+    const fee = activeSettings.marketplace.featuredGigFee;
+    if (!fee || fee <= 0) {
+      return res.status(500).json({ error: 'Feature fee is not configured.' });
+    }
+
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const result = await financialTransactionService.chargeFeaturedGigFee({
+      gigId: req.params.id,
+      sellerId: caller.id,
+      feeAmount: fee,
+      featuredUntil: expiresAt,
+      actor: `user:${caller.id}`
     });
+
+    res.json(result);
   } catch (err: any) {
-    return res.status(400).json({ error: err.message });
+    console.error('[FeatureGig] Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to feature gig' });
   }
-
-  g.featured = true;
-  g.featuredUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
-  postgresStore.saveGigs(gigs);
-
-  registerAuditLog({
-    id: 'log_' + Date.now(),
-    actor: caller.name,
-    role: caller.role,
-    action: 'GIG_FEATURED',
-    target: `Gig "${g.title}"`,
-    details: `Featured gig for 7 days. Fee: $${fee}`,
-    timestamp: new Date().toLocaleString()
-  });
-
-  res.json(g);
 });

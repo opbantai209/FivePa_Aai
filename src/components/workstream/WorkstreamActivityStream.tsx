@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import { WorkstreamMessage, WorkstreamOffer, WorkstreamItem } from './types';
 import { UserAccount } from '../../types';
+import { DEFAULT_AVATAR } from '../../constants';
 import {
   classifyActivityEvent,
   matchesActivityFilter,
@@ -275,9 +276,10 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
           {/* Sender row */}
           <div className="mt-4 flex items-center gap-3">
             <img
-              src={senderAvatar}
+              src={senderAvatar || DEFAULT_AVATAR}
               alt={senderName}
               className="w-9 h-9 rounded-full object-cover shrink-0 ring-1 ring-slate-100"
+              onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
             />
             <div>
               <div className="text-sm font-semibold text-gray-900 leading-tight">
@@ -594,9 +596,10 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
           {msg.senderId && (
             <div className="flex items-center gap-3">
               <img
-                src={senderAvatar}
+                src={senderAvatar || DEFAULT_AVATAR}
                 alt={senderName}
                 className="w-9 h-9 rounded-full object-cover shrink-0 ring-1 ring-slate-100"
+                onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
               />
               <div>
                 <div className="text-sm font-semibold text-gray-900 leading-tight">
@@ -1150,7 +1153,12 @@ export const WorkstreamActivityStream: React.FC<WorkstreamActivityStreamProps> =
                   </div>
                 )}
                 <div key={uniqueKey} className={`flex gap-3 my-2 ${isMe ? 'flex-row-reverse' : ''}`}>
-                  <img src={avatarUrl} alt={senderName} className="w-8 h-8 rounded-full object-cover shrink-0 mt-0.5 border border-slate-200" />
+                  <img 
+                    src={avatarUrl || DEFAULT_AVATAR} 
+                    alt={senderName} 
+                    className="w-8 h-8 rounded-full object-cover shrink-0 mt-0.5 border border-slate-200" 
+                    onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
+                  />
                   <div className={`flex flex-col gap-1 ${isMe ? 'items-end' : 'items-start'} max-w-[75%]`}>
                     <span className="text-[10px] font-bold text-slate-400 px-1">{senderName}</span>
                     <div className={`px-4 py-3 rounded-2xl text-xs ${

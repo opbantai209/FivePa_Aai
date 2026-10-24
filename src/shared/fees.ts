@@ -5,18 +5,18 @@
 export interface FeeConfig {
   /** Platform commission taken from the gig price (freelancer keeps 100 - this). Default 20. */
   commissionPercent: number;
-  /** Client service fee charged on top of the gig price. Default 5.5. */
+  /** Client service fee charged when gig price is under smallOrderThreshold. Default 1.0 (1%). */
   buyerFeePercent: number;
-  /** Flat fee added when the gig price is under the threshold. Default 3.50. */
+  /** Flat fee added when the gig price is under the threshold. Default 1.00 ($1). */
   smallOrderFee: number;
-  /** Orders with a gig price strictly below this get the small-order fee. Default 200. */
+  /** Orders with a gig price strictly below this get the buyer service fee (1% + $1). Orders at/above threshold pay $0. Default 200. */
   smallOrderThreshold: number;
 }
 
 export const DEFAULT_FEE_CONFIG: FeeConfig = {
   commissionPercent: 20,
-  buyerFeePercent: 5.5,
-  smallOrderFee: 3.5,
+  buyerFeePercent: 1.0,
+  smallOrderFee: 1.0,
   smallOrderThreshold: 200
 };
 
@@ -61,17 +61,18 @@ export function validateFeeConfig(cfg: FeeConfig): void {
 }
 
 /**
- * Fee rules:
+ * FivePA Fee rules:
  *  1. Freelancer commission: platform keeps commissionPercent (20%) of the gig price; freelancer gets the rest (80%).
- *  2. Client service fee: buyerFeePercent (5.5%) of the gig price, charged on top.
- *  3. Small-order fee: flat smallOrderFee ($3.50) on top when the gig price is under smallOrderThreshold ($200).
- *     The threshold is tested against the gig price (gig + selected extras), before the service fee.
+ *  2. Buyer service fee:
+ *     - If order amount < smallOrderThreshold ($200): buyer service fee = buyerFeePercent (1%) + smallOrderFee ($1.00).
+ *     - If order amount >= smallOrderThreshold ($200): buyer service fee = buyerFeePercent (1%), smallOrderFee = $0.
  */
 export function calculateOrderFees(gigPrice: number, cfg: FeeConfig = DEFAULT_FEE_CONFIG): OrderFeeBreakdown {
   validateFeeConfig(cfg);
   const gig = toCents(gigPrice);
-  const service = percentOfCents(gig, cfg.buyerFeePercent);
-  const small = gig > 0 && gig < toCents(cfg.smallOrderThreshold) ? toCents(cfg.smallOrderFee) : 0;
+  const isSmallOrder = gig > 0 && gig < toCents(cfg.smallOrderThreshold);
+  const service = gig > 0 ? percentOfCents(gig, cfg.buyerFeePercent) : 0;
+  const small = isSmallOrder ? toCents(cfg.smallOrderFee) : 0;
   const commission = percentOfCents(gig, cfg.commissionPercent);
   const net = gig - commission;
   const total = gig + service + small;
@@ -87,4 +88,8 @@ export function calculateOrderFees(gigPrice: number, cfg: FeeConfig = DEFAULT_FE
     platformRevenue: d(commission + service + small),
     cents: { gigPrice: gig, serviceFee: service, smallOrderFee: small, clientTotal: total, platformCommission: commission, freelancerNet: net }
   };
+}
+
+export function fromCents(cents: number): number {
+  return cents / 100;
 }

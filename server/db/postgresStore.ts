@@ -1,4 +1,5 @@
 import pkg from 'pg';
+import { PGlite } from '@electric-sql/pglite';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -29,8 +30,12 @@ const { Pool } = pkg;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+export function isRemotePostgresConfigured(): boolean {
+  return Boolean(process.env.DATABASE_URL || process.env.SQL_HOST);
+}
+
 export function isPostgresEnabled(): boolean {
-  return !!process.env.DATABASE_URL || !!process.env.SQL_HOST;
+  return true;
 }
 
 export function getDatabaseName(): string {
@@ -95,11 +100,89 @@ export function createAdminPgPool(databaseName?: string): pkg.Pool {
 // Global cached pool
 declare global {
   var _appPostgresPool: pkg.Pool | undefined;
+  var _appMockPool: any | undefined;
+}
+
+class PGlitePool {
+  private pglite: PGlite;
+  private isReadyPromise: Promise<void>;
+  private txLock: Promise<void> = Promise.resolve();
+
+  constructor(dataDir?: string) {
+    if (dataDir) {
+      if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+      }
+      this.pglite = new PGlite(dataDir);
+    } else {
+      this.pglite = new PGlite();
+    }
+    this.isReadyPromise = this.init();
+  }
+
+  private async init() {
+    await this.pglite.waitReady;
+  }
+
+  async query(text: string, params?: any[]) {
+    await this.isReadyPromise;
+    const trimmed = text.trim();
+    if ((!params || params.length === 0) && trimmed.includes(';') && trimmed.indexOf(';') < trimmed.length - 1) {
+      const results = await this.pglite.exec(text);
+      const last = results[results.length - 1];
+      return {
+        rows: last?.rows || [],
+        fields: last?.fields || [],
+        rowCount: last?.affectedRows ?? last?.rows?.length ?? 0
+      };
+    }
+    const res = await this.pglite.query(text, params || []);
+    return {
+      rows: res.rows || [],
+      fields: res.fields || [],
+      rowCount: res.affectedRows ?? res.rows?.length ?? 0
+    };
+  }
+
+  async connect() {
+    await this.isReadyPromise;
+    let releaseLock!: () => void;
+    const prevLock = this.txLock;
+    this.txLock = new Promise<void>(resolve => {
+      releaseLock = resolve;
+    });
+    await prevLock;
+
+    let released = false;
+    return {
+      query: async (text: string, params?: any[]) => this.query(text, params),
+      release: () => {
+        if (!released) {
+          released = true;
+          releaseLock();
+        }
+      }
+    };
+  }
+
+  async end() {
+    await this.isReadyPromise;
+    await this.pglite.close();
+  }
 }
 
 export function getPool(): pkg.Pool {
-  if (!isPostgresEnabled()) {
-    throw new Error('Postgres pool requested when Postgres is not enabled.');
+  if (!isRemotePostgresConfigured()) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('FATAL: Production environment requires a configured PostgreSQL database (DATABASE_URL or SQL_HOST). Fallback to local PGlite is disabled in production.');
+    }
+    if (!global._appMockPool) {
+      const pgDataDir = process.env.NODE_ENV === 'test'
+        ? undefined
+        : path.resolve(__dirname, '../../data/pgdata');
+      global._appMockPool = new PGlitePool(pgDataDir);
+    }
+    return global._appMockPool as unknown as pkg.Pool;
   }
   if (!global._appPostgresPool) {
     global._appPostgresPool = createPgPool();
@@ -125,9 +208,7 @@ export class PostgresStore {
 
   private withLock(key: string, fn: () => Promise<void>): Promise<void> {
     if (!isPostgresEnabled()) return Promise.resolve();
-    // Never save before the in-memory data is fully loaded (an empty array would delete rows).
     if (!this.isHydrated && key !== 'initialization' && !key.startsWith('meta_')) return Promise.resolve();
-    // A save for this key is already waiting: it reads the latest in-memory arrays when it runs, so reuse it.
     const queued = this.pending.get(key);
     if (queued) return queued;
     const prev = this.locks.get(key) || Promise.resolve();
@@ -138,14 +219,6 @@ export class PostgresStore {
   }
 
   public async executeInTransaction<T>(fn: (client: pkg.PoolClient) => Promise<T>): Promise<T> {
-    if (!isPostgresEnabled()) {
-      // Fallback mock client for non-postgres mode
-      const mockClient = {
-        query: async () => ({ rows: [] }),
-        release: () => {}
-      } as unknown as pkg.PoolClient;
-      return fn(mockClient);
-    }
     const client = await this.getPool().connect();
     try {
       await client.query('BEGIN');
@@ -166,22 +239,28 @@ export class PostgresStore {
 
   async runMigrations(): Promise<void> {
     if (!isPostgresEnabled()) return;
+    const migrationPath = path.join(__dirname, 'migration.sql');
+    if (!fs.existsSync(migrationPath)) return;
+    const sql = fs.readFileSync(migrationPath, 'utf-8');
+
+    if (!isRemotePostgresConfigured()) {
+      await this.getPool().query(sql);
+      console.log(`[PostgresStore] Migrations executed successfully on embedded PostgreSQL (${getDatabaseName()}).`);
+      return;
+    }
+
     const adminPool = createAdminPgPool(getDatabaseName());
     try {
-      const migrationPath = path.join(__dirname, 'migration.sql');
-      if (fs.existsSync(migrationPath)) {
-        const sql = fs.readFileSync(migrationPath, 'utf-8');
-        await adminPool.query(sql);
-        const appUser = process.env.SQL_USER || 'ai_studio_app_user';
-        await adminPool.query(`
-          GRANT ALL ON SCHEMA public TO ${appUser};
-          GRANT ALL ON ALL TABLES IN SCHEMA public TO ${appUser};
-          GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO ${appUser};
-          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${appUser};
-          ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${appUser};
-        `);
-        console.log(`[PostgresStore] Migrations executed successfully on ${getDatabaseName()}.`);
-      }
+      await adminPool.query(sql);
+      const appUser = process.env.SQL_USER || 'ai_studio_app_user';
+      await adminPool.query(`
+        GRANT ALL ON SCHEMA public TO ${appUser};
+        GRANT ALL ON ALL TABLES IN SCHEMA public TO ${appUser};
+        GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO ${appUser};
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO ${appUser};
+        ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO ${appUser};
+      `);
+      console.log(`[PostgresStore] Migrations executed successfully on ${getDatabaseName()}.`);
     } finally {
       await adminPool.end();
     }
@@ -235,6 +314,7 @@ export class PostgresStore {
         for (const order of orders) {
           if (!order?.id || seen.has(order.id)) continue;
           seen.add(order.id);
+          const resolvedOrderType = order.orderType || (order as any).type || (order.projectId ? 'project' : (order.gigId ? 'gig' : null));
           await client.query(
             `INSERT INTO orders (
               id, title, buyer_id, seller_id, amount, status, created_at, due_date, completed_at, 
@@ -243,8 +323,15 @@ export class PostgresStore {
               service_url, gig_slug, seller_username, buyer_username, service_title, service_thumbnail, 
               is_timer_paused, fee_breakdown, delivery_history, delivery_notes, delivery_reference, 
               accepted_version, review_window_days, review_window_expires_at, review,
-              workspace_id, seller_review, previous_status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
+              workspace_id, seller_review, previous_status,
+              order_type, gig_order_id, project_order_id, proposal_id,
+              extension_requests, free_extension_used, cancellation_request, cancellation_history,
+              cancellation_type, review_window_restarted_at, response_deadline
+            ) VALUES (
+              $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
+              $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37,
+              $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48
+            )
             ON CONFLICT (id) DO UPDATE SET
               title = EXCLUDED.title,
               buyer_id = EXCLUDED.buyer_id,
@@ -281,7 +368,18 @@ export class PostgresStore {
               review = EXCLUDED.review,
               workspace_id = EXCLUDED.workspace_id,
               seller_review = EXCLUDED.seller_review,
-              previous_status = EXCLUDED.previous_status`,
+              previous_status = EXCLUDED.previous_status,
+              order_type = EXCLUDED.order_type,
+              gig_order_id = EXCLUDED.gig_order_id,
+              project_order_id = EXCLUDED.project_order_id,
+              proposal_id = EXCLUDED.proposal_id,
+              extension_requests = EXCLUDED.extension_requests,
+              free_extension_used = EXCLUDED.free_extension_used,
+              cancellation_request = EXCLUDED.cancellation_request,
+              cancellation_history = EXCLUDED.cancellation_history,
+              cancellation_type = EXCLUDED.cancellation_type,
+              review_window_restarted_at = EXCLUDED.review_window_restarted_at,
+              response_deadline = EXCLUDED.response_deadline`,
             [
               order.id, order.title, order.buyerId, order.sellerId, order.amount, order.status,
               order.createdAt, order.dueDate, order.completedAt || null, order.requirements || null,
@@ -294,7 +392,11 @@ export class PostgresStore {
               JSON.stringify(order.feeBreakdown || null), JSON.stringify(order.deliveryHistory || []),
               order.deliveryNotes || null, order.deliveryReference || null, order.acceptedVersion ?? null,
               order.reviewWindowDays ?? null, order.reviewWindowExpiresAt || null, JSON.stringify(order.review || null),
-              (order as any).workspaceId || null, JSON.stringify((order as any).sellerReview || null), (order as any).previousStatus || null
+              (order as any).workspaceId || null, JSON.stringify((order as any).sellerReview || null), (order as any).previousStatus || null,
+              resolvedOrderType, order.gigOrderId || null, order.projectOrderId || null, order.proposalId || null,
+              JSON.stringify(order.extensionRequests || []), Boolean(order.freeExtensionUsed),
+              JSON.stringify(order.cancellationRequest || null), JSON.stringify(order.cancellationHistory || []),
+              order.cancellationType || null, order.reviewWindowRestartedAt || null, order.responseDeadline || null
             ]
           );
         }
@@ -316,45 +418,59 @@ export class PostgresStore {
   async listOrders(): Promise<Order[]> {
     if (!isPostgresEnabled()) return [];
     const res = await this.getPool().query('SELECT * FROM orders ORDER BY created_at DESC');
-    return res.rows.map(r => ({
-      id: r.id,
-      title: r.title,
-      buyerId: r.buyer_id,
-      sellerId: r.seller_id,
-      amount: Number(r.amount),
-      status: r.status,
-      createdAt: r.created_at,
-      dueDate: r.due_date,
-      completedAt: r.completed_at || undefined,
-      requirements: r.requirements || undefined,
-      deliverables: r.deliverables || undefined,
-      deliverableFiles: r.deliverable_files || [],
-      revisions: r.revisions || [],
-      adminNotes: r.admin_notes || undefined,
-      isMuted: r.is_muted,
-      escrowProtectionStartDate: r.escrow_protection_start_date || undefined,
-      escrowProtectionEndDate: r.escrow_protection_end_date || undefined,
-      gigId: r.gig_id || undefined,
-      projectId: r.project_id || undefined,
-      serviceUrl: r.service_url || undefined,
-      gigSlug: r.gig_slug || undefined,
-      sellerUsername: r.seller_username || undefined,
-      buyerUsername: r.buyer_username || undefined,
-      serviceTitle: r.service_title || undefined,
-      serviceThumbnail: r.service_thumbnail || undefined,
-      isTimerPaused: r.is_timer_paused,
-      feeBreakdown: r.fee_breakdown || undefined,
-      deliveryHistory: r.delivery_history || [],
-      deliveryNotes: r.delivery_notes || undefined,
-      deliveryReference: r.delivery_reference || undefined,
-      acceptedVersion: r.accepted_version ?? undefined,
-      reviewWindowDays: r.review_window_days ?? undefined,
-      reviewWindowExpiresAt: r.review_window_expires_at || undefined,
-      review: r.review || undefined,
-      ...(r.workspace_id ? { workspaceId: r.workspace_id } : {}),
-      ...(r.seller_review ? { sellerReview: r.seller_review } : {}),
-      ...(r.previous_status ? { previousStatus: r.previous_status } : {})
-    }));
+    return res.rows.map(r => {
+      const orderType = r.order_type || (r.project_id ? 'project' : (r.gig_id ? 'gig' : undefined));
+      return {
+        id: r.id,
+        title: r.title,
+        buyerId: r.buyer_id,
+        sellerId: r.seller_id,
+        amount: Number(r.amount),
+        status: r.status,
+        createdAt: r.created_at,
+        dueDate: r.due_date,
+        completedAt: r.completed_at || undefined,
+        requirements: r.requirements || undefined,
+        deliverables: r.deliverables || undefined,
+        deliverableFiles: r.deliverable_files || [],
+        revisions: r.revisions || [],
+        adminNotes: r.admin_notes || undefined,
+        isMuted: r.is_muted,
+        escrowProtectionStartDate: r.escrow_protection_start_date || undefined,
+        escrowProtectionEndDate: r.escrow_protection_end_date || undefined,
+        gigId: r.gig_id || undefined,
+        projectId: r.project_id || undefined,
+        serviceUrl: r.service_url || undefined,
+        gigSlug: r.gig_slug || undefined,
+        sellerUsername: r.seller_username || undefined,
+        buyerUsername: r.buyer_username || undefined,
+        serviceTitle: r.service_title || undefined,
+        serviceThumbnail: r.service_thumbnail || undefined,
+        isTimerPaused: r.is_timer_paused,
+        feeBreakdown: r.fee_breakdown || undefined,
+        deliveryHistory: r.delivery_history || [],
+        deliveryNotes: r.delivery_notes || undefined,
+        deliveryReference: r.delivery_reference || undefined,
+        acceptedVersion: r.accepted_version ?? undefined,
+        reviewWindowDays: r.review_window_days ?? undefined,
+        reviewWindowExpiresAt: r.review_window_expires_at || undefined,
+        review: r.review || undefined,
+        ...(r.workspace_id ? { workspaceId: r.workspace_id } : {}),
+        ...(r.seller_review ? { sellerReview: r.seller_review } : {}),
+        ...(r.previous_status ? { previousStatus: r.previous_status } : {}),
+        ...(orderType ? { orderType, type: orderType } : {}),
+        ...(r.gig_order_id ? { gigOrderId: r.gig_order_id } : {}),
+        ...(r.project_order_id ? { projectOrderId: r.project_order_id } : {}),
+        ...(r.proposal_id ? { proposalId: r.proposal_id } : {}),
+        extensionRequests: r.extension_requests || [],
+        freeExtensionUsed: Boolean(r.free_extension_used),
+        ...(r.cancellation_request ? { cancellationRequest: r.cancellation_request } : {}),
+        cancellationHistory: r.cancellation_history || [],
+        ...(r.cancellation_type ? { cancellationType: r.cancellation_type } : {}),
+        ...(r.review_window_restarted_at ? { reviewWindowRestartedAt: r.review_window_restarted_at } : {}),
+        ...(r.response_deadline ? { responseDeadline: r.response_deadline } : {})
+      };
+    });
   }
 
   // --- MESSAGES ---
@@ -532,7 +648,7 @@ export class PostgresStore {
               verified = EXCLUDED.verified,
               email_verified = EXCLUDED.email_verified,
               mobile_verified = EXCLUDED.mobile_verified,
-              wallet_balance = EXCLUDED.wallet_balance,
+              wallet_balance = COALESCE((SELECT available_balance FROM wallets WHERE user_id = EXCLUDED.id), users.wallet_balance),
               created_at = EXCLUDED.created_at,
               is_flagged = EXCLUDED.is_flagged,
               flag_reason = EXCLUDED.flag_reason,
@@ -569,7 +685,11 @@ export class PostgresStore {
 
   async listUsers(): Promise<User[]> {
     if (!isPostgresEnabled()) return [];
-    const res = await this.getPool().query('SELECT * FROM users');
+    const res = await this.getPool().query(`
+      SELECT u.*, COALESCE(w.available_balance, u.wallet_balance) AS current_wallet_balance 
+      FROM users u 
+      LEFT JOIN wallets w ON w.user_id = u.id
+    `);
     return res.rows.map(r => ({
       id: r.id,
       name: r.name,
@@ -577,7 +697,7 @@ export class PostgresStore {
       email: r.email,
       mobile: r.mobile || undefined,
       role: r.role,
-      avatar: r.avatar || '',
+      avatar: r.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
       title: r.title || '',
       rating: Number(r.rating),
       reviewsCount: Number(r.reviews_count),
@@ -590,7 +710,49 @@ export class PostgresStore {
       verified: r.verified,
       emailVerified: r.email_verified,
       mobileVerified: r.mobile_verified,
-      walletBalance: Number(r.wallet_balance),
+      walletBalance: Number(r.current_wallet_balance || 0),
+      createdAt: r.created_at,
+      isFlagged: r.is_flagged,
+      flagReason: r.flag_reason || undefined,
+      password: r.password || undefined,
+      sessionVersion: Number(r.session_version || 1),
+      knownDevices: r.known_devices || [],
+      isAvailableNow: r.is_available_now,
+      notificationPreferences: r.notification_preferences || undefined
+    }));
+  }
+
+  async listPublicUsers(): Promise<User[]> {
+    if (!isPostgresEnabled()) return [];
+    const res = await this.getPool().query(`
+      SELECT u.*, COALESCE(w.available_balance, u.wallet_balance) AS current_wallet_balance 
+      FROM users u 
+      LEFT JOIN wallets w ON w.user_id = u.id
+      WHERE u.status = 'active' 
+      AND (u.is_flagged = FALSE OR u.is_flagged IS NULL)
+      AND u.role NOT IN ('admin', 'super_admin', 'support', 'moderator', 'staff', 'internal')
+    `);
+    return res.rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      username: r.username || undefined,
+      email: r.email,
+      mobile: r.mobile || undefined,
+      role: r.role,
+      avatar: r.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
+      title: r.title || '',
+      rating: Number(r.rating),
+      reviewsCount: Number(r.reviews_count),
+      hourlyRate: Number(r.hourly_rate),
+      earned: Number(r.earned),
+      completedJobs: Number(r.completed_jobs),
+      bio: r.bio || '',
+      skills: r.skills || [],
+      status: r.status,
+      verified: r.verified,
+      emailVerified: r.email_verified,
+      mobileVerified: r.mobile_verified,
+      walletBalance: Number(r.current_wallet_balance || 0),
       createdAt: r.created_at,
       isFlagged: r.is_flagged,
       flagReason: r.flag_reason || undefined,
@@ -617,9 +779,9 @@ export class PostgresStore {
             `INSERT INTO gigs (
               id, freelancer_id, freelancer_name, freelancer_username, freelancer_avatar, 
               freelancer_level, title, slug, category, subcategory, description, price, 
-              delivery_days, rating, reviews_count, image, status, featured, extras, 
-              moderation_status, moderation_notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+              delivery_days, rating, reviews_count, image, cover_image, gallery, tags, 
+              status, featured, extras, moderation_status, moderation_notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
             ON CONFLICT (id) DO UPDATE SET
               freelancer_id = EXCLUDED.freelancer_id,
               freelancer_name = EXCLUDED.freelancer_name,
@@ -636,6 +798,9 @@ export class PostgresStore {
               rating = EXCLUDED.rating,
               reviews_count = EXCLUDED.reviews_count,
               image = EXCLUDED.image,
+              cover_image = EXCLUDED.cover_image,
+              gallery = EXCLUDED.gallery,
+              tags = EXCLUDED.tags,
               status = EXCLUDED.status,
               featured = EXCLUDED.featured,
               extras = EXCLUDED.extras,
@@ -645,7 +810,8 @@ export class PostgresStore {
               g.id, g.freelancerId, g.freelancerName, g.freelancerUsername || null, g.freelancerAvatar || null,
               g.freelancerLevel || null, g.title, g.slug || null, g.category, g.subcategory || null,
               g.description || null, g.price, g.deliveryDays, g.rating ?? 5.0, g.reviewsCount ?? 0,
-              g.image || null, g.status || 'published', !!g.featured, JSON.stringify(g.extras || []),
+              g.image || null, g.coverImage || null, g.gallery || [], g.tags || [],
+              g.status || 'published', !!g.featured, JSON.stringify(g.extras || []),
               g.moderationStatus || 'approved', g.moderationNotes || null
             ]
           );
@@ -673,7 +839,7 @@ export class PostgresStore {
       freelancerId: r.freelancer_id,
       freelancerName: r.freelancer_name,
       freelancerUsername: r.freelancer_username || undefined,
-      freelancerAvatar: r.freelancer_avatar || '',
+      freelancerAvatar: r.freelancer_avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80',
       freelancerLevel: r.freelancer_level || undefined,
       title: r.title,
       slug: r.slug || undefined,
@@ -684,7 +850,10 @@ export class PostgresStore {
       deliveryDays: Number(r.delivery_days),
       rating: Number(r.rating),
       reviewsCount: Number(r.reviews_count),
-      image: r.image || '',
+      image: r.image || 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=800&h=500&fit=crop',
+      coverImage: r.cover_image || undefined,
+      gallery: r.gallery || [],
+      tags: r.tags || [],
       status: r.status,
       featured: r.featured,
       extras: r.extras || [],
@@ -707,9 +876,9 @@ export class PostgresStore {
           await client.query(
             `INSERT INTO projects (
               id, buyer_id, buyer_name, buyer_avatar, title, slug, category, subcategory, 
-              description, budget_min, budget_max, deadline_days, proposals_count, 
-              created_at, status, featured, moderation_status, moderation_notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+              description, budget_min, budget_max, budget, budget_type, duration, deadline_days, proposals_count, 
+              created_at, status, featured, moderation_status, moderation_notes, skills
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
             ON CONFLICT (id) DO UPDATE SET
               buyer_id = EXCLUDED.buyer_id,
               buyer_name = EXCLUDED.buyer_name,
@@ -721,18 +890,24 @@ export class PostgresStore {
               description = EXCLUDED.description,
               budget_min = EXCLUDED.budget_min,
               budget_max = EXCLUDED.budget_max,
+              budget = EXCLUDED.budget,
+              budget_type = EXCLUDED.budget_type,
+              duration = EXCLUDED.duration,
               deadline_days = EXCLUDED.deadline_days,
               proposals_count = EXCLUDED.proposals_count,
               created_at = EXCLUDED.created_at,
               status = EXCLUDED.status,
               featured = EXCLUDED.featured,
               moderation_status = EXCLUDED.moderation_status,
-              moderation_notes = EXCLUDED.moderation_notes`,
+              moderation_notes = EXCLUDED.moderation_notes,
+              skills = EXCLUDED.skills`,
             [
               p.id, p.buyerId, p.buyerName, p.buyerAvatar || null, p.title, p.slug || null,
               p.category, p.subcategory || null, p.description || null, p.budgetMin,
-              p.budgetMax, p.deadlineDays, p.proposalsCount ?? 0, p.createdAt,
-              p.status || 'open', !!p.featured, p.moderationStatus || 'approved', p.moderationNotes || null
+              p.budgetMax, p.budget || null, p.budgetType || null, p.duration || null,
+              p.deadlineDays, p.proposalsCount ?? 0, p.createdAt,
+              p.status || 'open', !!p.featured, p.moderationStatus || 'approved', p.moderationNotes || null,
+              p.skills || []
             ]
           );
         }
@@ -766,13 +941,17 @@ export class PostgresStore {
       description: r.description || '',
       budgetMin: Number(r.budget_min),
       budgetMax: Number(r.budget_max),
+      budget: r.budget ? Number(r.budget) : undefined,
+      budgetType: r.budget_type || undefined,
+      duration: r.duration || undefined,
       deadlineDays: Number(r.deadline_days),
       proposalsCount: Number(r.proposals_count),
       createdAt: r.created_at,
       status: r.status,
       featured: r.featured,
       moderationStatus: r.moderation_status || undefined,
-      moderationNotes: r.moderation_notes || undefined
+      moderationNotes: r.moderation_notes || undefined,
+      skills: r.skills || []
     }));
   }
 
@@ -790,8 +969,9 @@ export class PostgresStore {
           await client.query(
             `INSERT INTO proposals (
               id, project_id, freelancer_id, freelancer_name, freelancer_avatar, 
-              freelancer_title, cover_letter, bid_amount, delivery_days, created_at, status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+              freelancer_title, cover_letter, bid_amount, delivery_days, created_at, status,
+              workstream_order_id, offer_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (id) DO UPDATE SET
               project_id = EXCLUDED.project_id,
               freelancer_id = EXCLUDED.freelancer_id,
@@ -802,11 +982,14 @@ export class PostgresStore {
               bid_amount = EXCLUDED.bid_amount,
               delivery_days = EXCLUDED.delivery_days,
               created_at = EXCLUDED.created_at,
-              status = EXCLUDED.status`,
+              status = EXCLUDED.status,
+              workstream_order_id = EXCLUDED.workstream_order_id,
+              offer_id = EXCLUDED.offer_id`,
             [
               pr.id, pr.projectId, pr.freelancerId, pr.freelancerName, pr.freelancerAvatar || null,
               pr.freelancerTitle || null, pr.coverLetter || null, pr.bidAmount,
-              pr.deliveryDays, pr.createdAt, pr.status || 'pending'
+              pr.deliveryDays, pr.createdAt, pr.status || 'pending',
+              pr.workstreamOrderId || null, pr.offerId || null
             ]
           );
         }
@@ -839,76 +1022,68 @@ export class PostgresStore {
       bidAmount: Number(r.bid_amount),
       deliveryDays: Number(r.delivery_days),
       createdAt: r.created_at,
-      status: r.status
+      status: r.status,
+      ...(r.workstream_order_id ? { workstreamOrderId: r.workstream_order_id } : {}),
+      ...(r.offer_id ? { offerId: r.offer_id } : {})
     }));
   }
 
   // --- WORKSPACES ---
+  async saveWorkspace(w: any): Promise<void> {
+    if (!isPostgresEnabled() || !w?.workspaceId) return;
+    const createdAt = w.createdAt || new Date().toISOString().split('T')[0];
+    const updatedAt = w.updatedAt || new Date().toISOString();
+    const title = w.title || w.originId || w.workspaceId;
+    const meta = {
+      ...(w.metadata || {}),
+      originType: w.originType || 'gig',
+      originId: w.originId || title,
+      status: w.status || 'active',
+      activeOrderId: w.activeOrderId
+    };
+    await this.getPool().query(
+      `INSERT INTO workspaces (
+        workspace_id, buyer_id, seller_id, order_ids, title, created_at, updated_at, last_activity_at, metadata
+      ) VALUES ($1, $2, $3, '[]', $4, $5, $6, $7, $8)
+      ON CONFLICT (workspace_id) DO UPDATE SET
+        buyer_id = EXCLUDED.buyer_id,
+        seller_id = EXCLUDED.seller_id,
+        title = EXCLUDED.title,
+        created_at = EXCLUDED.created_at,
+        updated_at = EXCLUDED.updated_at,
+        last_activity_at = EXCLUDED.last_activity_at,
+        metadata = EXCLUDED.metadata`,
+      [
+        w.workspaceId, w.buyerId, w.sellerId,
+        title, createdAt, updatedAt, w.lastActivityAt || null, JSON.stringify(meta)
+      ]
+    );
+  }
+
+  async deleteWorkspace(workspaceId: string): Promise<void> {
+    if (!isPostgresEnabled() || !workspaceId) return;
+    await this.getPool().query('DELETE FROM workspaces WHERE workspace_id = $1', [workspaceId]);
+  }
+
   async saveWorkspaces(workspaces: any[]): Promise<void> {
     return this.withLock('workspaces', async () => {
       if (!workspaces) return;
-      const client = await this.getPool().connect();
-      try {
-        await client.query('BEGIN');
-        const seen = new Set<string>();
-        for (const w of workspaces) {
-          if (!w?.workspaceId || seen.has(w.workspaceId)) continue;
-          seen.add(w.workspaceId);
-          const createdAt = w.createdAt || new Date().toISOString().split('T')[0];
-          const updatedAt = w.updatedAt || createdAt;
-          const title = w.title || w.originId || w.workspaceId;
-          const orderIds = Array.isArray(w.orderIds) ? w.orderIds : (w.activeOrderId ? [w.activeOrderId] : []);
-          const meta = {
-            ...(w.metadata || {}),
-            originType: w.originType || 'gig',
-            originId: w.originId || title,
-            status: w.status || 'active',
-            activeOrderId: w.activeOrderId
-          };
-          await client.query(
-            `INSERT INTO workspaces (
-              workspace_id, buyer_id, seller_id, order_ids, title, created_at, updated_at, last_activity_at, metadata
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            ON CONFLICT (workspace_id) DO UPDATE SET
-              buyer_id = EXCLUDED.buyer_id,
-              seller_id = EXCLUDED.seller_id,
-              order_ids = EXCLUDED.order_ids,
-              title = EXCLUDED.title,
-              created_at = EXCLUDED.created_at,
-              updated_at = EXCLUDED.updated_at,
-              last_activity_at = EXCLUDED.last_activity_at,
-              metadata = EXCLUDED.metadata`,
-            [
-              w.workspaceId, w.buyerId, w.sellerId, JSON.stringify(orderIds),
-              title, createdAt, updatedAt, w.lastActivityAt || null, JSON.stringify(meta)
-            ]
-          );
-        }
-        if (seen.size > 0) {
-          await client.query('DELETE FROM workspaces WHERE workspace_id <> ALL($1)', [Array.from(seen)]);
-        } else {
-          await client.query('DELETE FROM workspaces');
-        }
-        await client.query('COMMIT');
-      } catch (e) {
-        await client.query('ROLLBACK');
-        throw e;
-      } finally {
-        client.release();
+      for (const w of workspaces) {
+        if (!w?.workspaceId) continue;
+        await this.saveWorkspace(w);
       }
     });
   }
 
   async listWorkspaces(): Promise<any[]> {
     if (!isPostgresEnabled()) return [];
-    const res = await this.getPool().query('SELECT * FROM workspaces');
+    const res = await this.getPool().query('SELECT * FROM workspaces ORDER BY created_at DESC');
     return res.rows.map(r => {
-      const meta = r.metadata || {};
+      const meta = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : (r.metadata || {});
       return {
         workspaceId: r.workspace_id,
         buyerId: r.buyer_id,
         sellerId: r.seller_id,
-        orderIds: r.order_ids || [],
         title: r.title,
         createdAt: r.created_at,
         updatedAt: r.updated_at,
@@ -916,7 +1091,7 @@ export class PostgresStore {
         originType: meta.originType || 'gig',
         originId: meta.originId || r.title || r.workspace_id,
         status: meta.status || 'active',
-        activeOrderId: meta.activeOrderId || (Array.isArray(r.order_ids) ? r.order_ids[0] : undefined),
+        activeOrderId: meta.activeOrderId || undefined,
         metadata: meta
       };
     });
@@ -1430,10 +1605,25 @@ export class PostgresStore {
   async saveUploadRecord(filename: string, record: WorkstreamUploadRecord): Promise<void> {
     return this.withLock('uploads', async () => {
       await this.getPool().query(
-        `INSERT INTO uploads (filename, owner_id, original_name, mime, size, created_at, sha256)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (filename) DO UPDATE SET owner_id = EXCLUDED.owner_id, size = EXCLUDED.size, original_name = EXCLUDED.original_name`,
-        [filename, record.ownerId, record.originalName || null, record.mime || null, record.size || 0, record.createdAt, record.sha256 || null]
+        `INSERT INTO uploads (filename, owner_id, original_name, mime, size, created_at, sha256, order_id, workspace_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         ON CONFLICT (filename) DO UPDATE SET 
+           owner_id = EXCLUDED.owner_id, 
+           size = EXCLUDED.size, 
+           original_name = EXCLUDED.original_name,
+           order_id = COALESCE(EXCLUDED.order_id, uploads.order_id),
+           workspace_id = COALESCE(EXCLUDED.workspace_id, uploads.workspace_id)`,
+        [
+          filename,
+          record.ownerId,
+          record.originalName || null,
+          record.mime || null,
+          record.size || 0,
+          record.createdAt,
+          record.sha256 || null,
+          record.orderId || null,
+          record.workspaceId || null
+        ]
       );
     });
   }
@@ -1455,7 +1645,9 @@ export class PostgresStore {
         mime: r.mime || undefined,
         size: Number(r.size),
         createdAt: r.created_at,
-        sha256: r.sha256 || undefined
+        sha256: r.sha256 || undefined,
+        orderId: r.order_id || undefined,
+        workspaceId: r.workspace_id || undefined
       };
     }
     return out;
@@ -1500,18 +1692,44 @@ export class PostgresStore {
   // --- FINANCIAL LEDGER STATE ---
   async saveLedgerState(state: any): Promise<void> {
     return this.withLock('financial_ledger_state', async () => {
-      await this.getPool().query(
-        `INSERT INTO financial_ledger_state (key, value, updated_at)
+      const query = `INSERT INTO financial_ledger_state (key, value, updated_at)
          VALUES ('primary', $1, NOW())
-         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-        [JSON.stringify(state)]
-      );
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`;
+      const params = [JSON.stringify(state)];
+      try {
+        await this.getPool().query(query, params);
+      } catch (err: any) {
+        if (err.code === '42P01' && process.env.NODE_ENV === 'test') {
+          await this.runMigrations();
+          await this.getPool().query(query, params);
+        } else {
+          throw err;
+        }
+      }
     });
   }
 
   async loadLedgerState(): Promise<any | null> {
     if (!isPostgresEnabled()) return null;
     const res = await this.getPool().query("SELECT value FROM financial_ledger_state WHERE key = 'primary'");
+    return res.rows.length > 0 ? res.rows[0].value : null;
+  }
+
+  // --- CATEGORIES ---
+  async saveCategories(categories: any[]): Promise<void> {
+    return this.withLock('categories', async () => {
+      await this.getPool().query(
+        `INSERT INTO site_settings (key, value, updated_at)
+         VALUES ('categories', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        [JSON.stringify(categories)]
+      );
+    });
+  }
+
+  async loadCategories(): Promise<any[] | null> {
+    if (!isPostgresEnabled()) return null;
+    const res = await this.getPool().query("SELECT value FROM site_settings WHERE key = 'categories'");
     return res.rows.length > 0 ? res.rows[0].value : null;
   }
 

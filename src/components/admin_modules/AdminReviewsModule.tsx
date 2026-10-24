@@ -5,6 +5,7 @@ import {
   TrendingUp, Ban, ShieldCheck, User, MessageSquare, ThumbsUp
 } from 'lucide-react';
 import { Review } from '../../types';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface ExtendedReview extends Review {
   moderationStatus?: 'approved' | 'flagged' | 'hidden';
@@ -268,9 +269,10 @@ export const AdminReviewsModule: React.FC<AdminReviewsModuleProps> = ({
                       <div className="space-y-1.5">
                         <div className="flex items-center gap-2">
                           <img
-                            src={review.reviewerAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&h=100&fit=crop'}
+                            src={review.reviewerAvatar || DEFAULT_AVATAR}
                             alt={review.reviewerName || 'Buyer'}
                             className="w-5 h-5 rounded-full object-cover"
+                            onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                           />
                           <span className="font-bold text-slate-900 text-[11px]">{review.reviewerName || 'Client'}</span>
                         </div>

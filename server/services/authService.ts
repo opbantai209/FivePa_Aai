@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { randomInt } from 'crypto';
-import { users } from '../store.js';
+import { store } from '../store.js';
 import { postgresStore } from '../db/postgresStore.js';
 import {
   signToken,
@@ -128,10 +128,15 @@ export async function handleLogin(req: Request, res: Response) {
     return res.status(401).json({ error: 'Password is required.' });
   }
 
-  const user = users.find(u =>
-    (lookupEmail && u.email && u.email.toLowerCase() === lookupEmail) ||
-    (lookupId && u.id === lookupId)
-  );
+  let user: any = null;
+  if (lookupEmail) {
+    const userRes = await postgresStore.getPool().query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [lookupEmail]);
+    if (userRes.rows.length > 0) {
+      user = await store.getUser(userRes.rows[0].id);
+    }
+  } else if (lookupId) {
+    user = await store.getUser(lookupId);
+  }
 
   if (!user) {
     recordFailedLogin();
@@ -230,7 +235,7 @@ export async function handleLogin(req: Request, res: Response) {
   for (const key of attemptKeys) loginAttempts.delete(key);
 
   try {
-    await postgresStore.saveUsers(users);
+    await store.saveUser(user);
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to persist login session.' });
   }

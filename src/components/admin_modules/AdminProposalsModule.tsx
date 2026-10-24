@@ -5,6 +5,7 @@ import {
   TrendingUp, DollarSign, Award, FileText, User, Ban, Star
 } from 'lucide-react';
 import { Proposal } from '../../types';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface ExtendedProposal extends Proposal {
   projectTitle?: string;
@@ -216,9 +217,10 @@ export const AdminProposalsModule: React.FC<AdminProposalsModuleProps> = ({
                     <td className="py-3.5 px-4">
                       <div className="flex items-center gap-3">
                         <img
-                          src={proposal.freelancerAvatar}
+                          src={proposal.freelancerAvatar || DEFAULT_AVATAR}
                           alt={proposal.freelancerName}
                           className="w-9 h-9 rounded-full object-cover border border-slate-200"
+                          onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                         />
                         <div>
                           <div className="font-bold text-slate-900 text-sm flex items-center gap-1">

@@ -1,8 +1,5 @@
 import {
-  notifications,
-  userEmails,
-  users,
-  orders,
+  store,
   type Notification,
   type UserEmail,
   type User,
@@ -52,8 +49,8 @@ export function sendEmail(to: string, subject: string, text: string) {
     .catch(err => console.error('[email] send failed:', err?.message || err));
 }
 
-export function sendOrderEmail(userId: string, subject: string, body: string, path?: string) {
-  const user = users.find(u => u.id === userId);
+export async function sendOrderEmail(userId: string, subject: string, body: string, path?: string) {
+  const user = await store.getUser(userId);
   if (!user || !user.email) return;
   const link = path && APP_URL ? `\n\nOpen the order: ${APP_URL}${path}` : '';
   sendEmail(user.email, subject, `${body}${link}\n\n- WorkPerHour`);
@@ -65,8 +62,32 @@ export function recordUserEmail(email: UserEmail) {
     snippet: email.snippet ? email.snippet.replace(/\b\d{6}\b/g, '******') : '',
     body: email.body ? email.body.replace(/\b\d{6}\b/g, '******') : ''
   };
-  userEmails.unshift(sanitized);
-  postgresStore.saveUserEmails(userEmails).catch(err => console.error('[PostgresStore] Failed to save user emails:', err));
+  postgresStore.getPool().query(
+    `INSERT INTO user_emails (id, user_id, user_email, subject, snippet, body, type, sent_at, date, read)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     ON CONFLICT (id) DO UPDATE SET
+       user_id = EXCLUDED.user_id,
+       user_email = EXCLUDED.user_email,
+       subject = EXCLUDED.subject,
+       snippet = EXCLUDED.snippet,
+       body = EXCLUDED.body,
+       type = EXCLUDED.type,
+       sent_at = EXCLUDED.sent_at,
+       date = EXCLUDED.date,
+       read = EXCLUDED.read`,
+    [
+      sanitized.id,
+      sanitized.userId,
+      sanitized.userEmail,
+      sanitized.subject,
+      sanitized.snippet || null,
+      sanitized.body,
+      sanitized.type || null,
+      sanitized.sentAt || null,
+      sanitized.date || null,
+      Boolean(sanitized.read)
+    ]
+  ).catch(err => console.error('[PostgresStore] Failed to save user email:', err));
 }
 
 export async function createNotification({
@@ -90,11 +111,6 @@ export async function createNotification({
   if (actorId && actorId === userId) return;
   if (!userId) return;
 
-  if (dedupKey) {
-    const existing = notifications.find(n => n.userId === userId && n.dedupKey === dedupKey);
-    if (existing) return;
-  }
-
   const newNotif: Notification = {
     id: `notif_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
     userId,
@@ -117,7 +133,6 @@ export async function createNotification({
     throw err;
   }
 
-  notifications.unshift(newNotif);
   broadcastNotificationToUser(userId, newNotif);
 }
 
@@ -125,11 +140,8 @@ export function notifyUser(message: Message, targetUserId: string) {
   const payload = JSON.stringify({ type: 'MESSAGE_RECEIVED', message });
   for (const client of clients) {
     const clientUserId = (client as any).authenticatedUserId;
-    const clientUser = users.find(u => u.id === clientUserId);
-    const isAuthorized = clientUser && (
-      ['admin', 'super_admin', 'support'].includes(clientUser.role) ||
-      clientUserId === targetUserId
-    );
+    const clientRole = (client as any).authenticatedRole;
+    const isAuthorized = ['admin', 'super_admin', 'support'].includes(clientRole) || clientUserId === targetUserId;
 
     if (isAuthorized && client.readyState === WebSocket.OPEN) {
       client.send(payload);
@@ -137,8 +149,8 @@ export function notifyUser(message: Message, targetUserId: string) {
   }
 }
 
-export function notifyOrderParties(orderId: string, action: string, text: string, msgId: string) {
-  const order = orders.find(o => o.id === orderId);
+export async function notifyOrderParties(orderId: string, action: string, text: string, msgId: string) {
+  const order = await store.getOrder(orderId);
   if (!order) return;
   const map: Record<string, { to: ('buyer'|'seller')[]; title: string }> = {
     order_created:        { to: ['seller'],           title: 'New Order Received' },
@@ -193,11 +205,12 @@ export function notifyUserOnAdminAction(user: User, action: 'suspended' | 'restr
   recordUserEmail({
     id: `em_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     userId: user.id,
+    userEmail: user.email,
     subject: emailSubject,
-    sender: 'security@workperhour.com',
     snippet: chatText,
     body: emailBody,
     date: timeShort,
+    type: 'ALERT',
     read: false
   });
 

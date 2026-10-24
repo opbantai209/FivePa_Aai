@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { WorkstreamItem } from './types';
 import { UserAccount } from '../../types';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface WorkstreamVideoCallModalProps {
   isOpen: boolean;
@@ -200,9 +201,10 @@ export const WorkstreamVideoCallModal: React.FC<WorkstreamVideoCallModalProps> =
         <div className="py-3 flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5">
             <img 
-              src={partner?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a676752?w=400&h=400&fit=crop'} 
+              src={partner?.avatar || DEFAULT_AVATAR} 
               alt={partner?.name || 'Participant'} 
               className="w-9 h-9 rounded-full object-cover border border-emerald-500"
+              onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
             />
             <div className="overflow-hidden">
               <h5 className="text-xs font-bold truncate">{partner?.name || 'Project Collaborator'}</h5>
@@ -349,9 +351,10 @@ export const WorkstreamVideoCallModal: React.FC<WorkstreamVideoCallModalProps> =
                     <div className="flex flex-col items-center gap-3">
                       <div className="w-20 h-20 rounded-full bg-slate-800 border-2 border-slate-700 flex items-center justify-center overflow-hidden">
                         <img 
-                          src={currentUser?.avatar || 'https://images.unsplash.com/photo-1534528741775-53994a676752?w=400&h=400&fit=crop'} 
+                          src={currentUser?.avatar || DEFAULT_AVATAR} 
                           alt="You" 
                           className="w-full h-full object-cover"
+                          onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                         />
                       </div>
                       <span className="text-xs font-medium text-slate-400">Camera Turned Off</span>
@@ -376,9 +379,10 @@ export const WorkstreamVideoCallModal: React.FC<WorkstreamVideoCallModalProps> =
                     <div className="relative">
                       <div className="w-24 h-24 rounded-full bg-slate-800 border-2 border-emerald-500/60 flex items-center justify-center overflow-hidden shadow-lg shadow-emerald-500/10">
                         <img 
-                          src={partner?.avatar || 'https://images.unsplash.com/photo-1580489944761-15a19d654956?w=400&h=400&fit=crop'} 
+                          src={partner?.avatar || DEFAULT_AVATAR} 
                           alt={partner?.name || 'Partner'} 
                           className="w-full h-full object-cover"
+                          onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                         />
                       </div>
                       <span className="absolute bottom-1 right-1 w-4 h-4 bg-emerald-500 border-2 border-slate-900 rounded-full" />

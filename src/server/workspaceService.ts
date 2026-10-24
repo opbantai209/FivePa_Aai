@@ -1,22 +1,25 @@
 import { randomUUID } from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { Workspace, Order } from '../types.js';
+import { postgresStore } from '../../server/db/postgresStore.js';
 
 class WorkspaceService {
   private workspaces: Map<string, Workspace> = new Map();
-
-  constructor() {
-    this.loadFromDisk();
-  }
 
   public loadFromList(list: any[]) {
     if (Array.isArray(list)) {
       this.workspaces.clear();
       for (const w of list) {
-        if (w.workspaceId) this.workspaces.set(w.workspaceId, w);
+        if (w?.workspaceId) this.workspaces.set(w.workspaceId, w);
       }
+    }
+  }
+
+  public async hydrateFromPostgres(): Promise<void> {
+    try {
+      const list = await postgresStore.listWorkspaces();
+      this.loadFromList(list);
+    } catch (err) {
+      console.error('[WorkspaceService] Failed to hydrate workspaces from PostgreSQL:', err);
     }
   }
 
@@ -24,21 +27,53 @@ class WorkspaceService {
     return Array.from(this.workspaces.values());
   }
 
-  private loadFromDisk() {
-    // Deprecated: Workspaces are now loaded from PostgreSQL via hydrateStoreFromPostgres()
+  public async listAllAsync(): Promise<Workspace[]> {
+    const dbList = await postgresStore.listWorkspaces();
+    this.loadFromList(dbList);
+    return Array.from(this.workspaces.values());
+  }
+
+  public async persistWorkspace(workspace: Workspace): Promise<void> {
+    try {
+      await postgresStore.saveWorkspace(workspace);
+    } catch (err) {
+      console.error(`[WorkspaceService] Failed to persist workspace ${workspace.workspaceId} to PostgreSQL:`, err);
+      throw err;
+    }
   }
 
   public saveToDisk() {
-    try {
-      const list = Array.from(this.workspaces.values());
-      import('../../server/db/postgresStore.js').then(({ postgresStore }) => {
-        postgresStore.saveWorkspaces(list).catch(err => {
-          console.error('[WorkspaceService] Failed to persist workspaces to PostgreSQL:', err);
-        });
-      }).catch(() => {});
-    } catch (err) {
-      console.error('Failed to save workspaces:', err);
-    }
+    const list = Array.from(this.workspaces.values());
+    postgresStore.saveWorkspaces(list).catch(err => {
+      console.error('[WorkspaceService] Failed to persist workspaces to PostgreSQL:', err);
+    });
+  }
+
+  public async createWorkspaceAsync(params: {
+    buyerId: string;
+    sellerId: string;
+    originType: 'gig' | 'project';
+    originId: string;
+    activeOrderId?: string;
+    title?: string;
+  }): Promise<Workspace> {
+    const workspaceId = 'ws_' + randomUUID().slice(0, 12);
+    const createdAt = new Date().toISOString().split('T')[0];
+    const workspace: Workspace & { title?: string; updatedAt?: string } = {
+      workspaceId,
+      buyerId: params.buyerId,
+      sellerId: params.sellerId,
+      originType: params.originType,
+      originId: params.originId,
+      createdAt,
+      updatedAt: new Date().toISOString(),
+      status: 'active',
+      activeOrderId: params.activeOrderId,
+      title: params.title || params.originId
+    };
+    this.workspaces.set(workspaceId, workspace);
+    await this.persistWorkspace(workspace);
+    return workspace;
   }
 
   public createWorkspace(params: {
@@ -47,20 +82,24 @@ class WorkspaceService {
     originType: 'gig' | 'project';
     originId: string;
     activeOrderId?: string;
+    title?: string;
   }): Workspace {
     const workspaceId = 'ws_' + randomUUID().slice(0, 12);
-    const workspace: Workspace = {
+    const createdAt = new Date().toISOString().split('T')[0];
+    const workspace: Workspace & { title?: string; updatedAt?: string } = {
       workspaceId,
       buyerId: params.buyerId,
       sellerId: params.sellerId,
       originType: params.originType,
       originId: params.originId,
-      createdAt: new Date().toISOString().split('T')[0],
+      createdAt,
+      updatedAt: new Date().toISOString(),
       status: 'active',
-      activeOrderId: params.activeOrderId
+      activeOrderId: params.activeOrderId,
+      title: params.title || params.originId
     };
     this.workspaces.set(workspaceId, workspace);
-    this.saveToDisk();
+    this.persistWorkspace(workspace).catch(() => {});
     return workspace;
   }
 
@@ -68,71 +107,104 @@ class WorkspaceService {
     return this.workspaces.get(workspaceId);
   }
 
+  public async getWorkspaceAsync(workspaceId: string): Promise<Workspace | undefined> {
+    const dbList = await postgresStore.listWorkspaces();
+    this.loadFromList(dbList);
+    return this.workspaces.get(workspaceId);
+  }
+
   public getWorkspacesForUser(userId: string): Workspace[] {
     return Array.from(this.workspaces.values()).filter(w => w.buyerId === userId || w.sellerId === userId);
+  }
+
+  public async getWorkspacesForUserAsync(userId: string): Promise<Workspace[]> {
+    await this.hydrateFromPostgres();
+    return this.getWorkspacesForUser(userId);
   }
 
   public findWorkspaceByOrder(orderId: string, orders: Order[]): Workspace | undefined {
     const order = orders.find(o => o.id === orderId);
     if (!order) return undefined;
+    // Authoritative relationship: Order.workspaceId -> Workspace
     if (order.workspaceId) {
       return this.workspaces.get(order.workspaceId);
-    }
-    // Search strictly by activeOrderId or exact project origin
-    for (const w of this.workspaces.values()) {
-      if (w.activeOrderId === orderId) return w;
-      if (order.projectId && w.originType === 'project' && w.originId === order.projectId && w.buyerId === order.buyerId && w.sellerId === order.sellerId) {
-        return w;
-      }
     }
     return undefined;
   }
 
-  public ensureWorkspaceForOrder(order: Order): Workspace {
-    // 1. Explicit workspaceId: reuse it
+  public async ensureWorkspaceForOrderAsync(order: Order): Promise<Workspace> {
+    let ws: (Workspace & { title?: string; updatedAt?: string }) | undefined;
+
     if (order.workspaceId && this.workspaces.has(order.workspaceId)) {
-      return this.workspaces.get(order.workspaceId)!;
+      ws = this.workspaces.get(order.workspaceId)!;
+    } else if (order.workspaceId) {
+      const dbWsList = await postgresStore.listWorkspaces();
+      this.loadFromList(dbWsList);
+      ws = this.workspaces.get(order.workspaceId);
+    }
+
+    if (ws) {
+      if (!ws.activeOrderId) ws.activeOrderId = order.id;
+      ws.updatedAt = new Date().toISOString();
+      await this.persistWorkspace(ws);
+      order.workspaceId = ws.workspaceId;
+      return ws;
     }
 
     const originType = order.projectId ? 'project' : 'gig';
     const originId = order.projectId || order.gigId || order.id;
 
-    // 2. Exact Origin Match: If this order belongs to a specific Project or Gig where a Workspace already exists
-    let existing: Workspace | undefined;
-    const targetOriginId = order.projectId || order.gigId;
-    const targetOriginType = order.projectId ? 'project' : 'gig';
+    ws = await this.createWorkspaceAsync({
+      buyerId: order.buyerId,
+      sellerId: order.sellerId,
+      originType,
+      originId,
+      activeOrderId: order.id,
+      title: order.title || originId
+    });
 
-    if (targetOriginId) {
-      existing = Array.from(this.workspaces.values()).find(w =>
-        w.buyerId === order.buyerId &&
-        w.sellerId === order.sellerId &&
-        w.originType === targetOriginType &&
-        w.originId === targetOriginId
-      );
+    order.workspaceId = ws.workspaceId;
+    return ws;
+  }
+
+  public ensureWorkspaceForOrder(order: Order): Workspace {
+    let ws: (Workspace & { title?: string; updatedAt?: string }) | undefined;
+
+    if (order.workspaceId && this.workspaces.has(order.workspaceId)) {
+      ws = this.workspaces.get(order.workspaceId)!;
     }
 
-    // 3. Active Order Match: If a workspace explicitly lists this order as its activeOrderId
-    if (!existing) {
-      existing = Array.from(this.workspaces.values()).find(w => w.activeOrderId === order.id);
+    if (ws) {
+      if (!ws.activeOrderId) ws.activeOrderId = order.id;
+      ws.updatedAt = new Date().toISOString();
+      this.persistWorkspace(ws).catch(() => {});
+      order.workspaceId = ws.workspaceId;
+      return ws;
     }
 
-    // 4. If no exact/known relationship match exists, create a new dedicated Workspace (never guess based on generic buyer+seller alone)
-    if (!existing) {
-      existing = this.createWorkspace({
-        buyerId: order.buyerId,
-        sellerId: order.sellerId,
-        originType,
-        originId,
-        activeOrderId: order.id
-      });
-    }
+    const originType = order.projectId ? 'project' : 'gig';
+    const originId = order.projectId || order.gigId || order.id;
 
-    order.workspaceId = existing.workspaceId;
-    if (!existing.activeOrderId) {
-      existing.activeOrderId = order.id;
-    }
-    this.saveToDisk();
-    return existing;
+    ws = this.createWorkspace({
+      buyerId: order.buyerId,
+      sellerId: order.sellerId,
+      originType,
+      originId,
+      activeOrderId: order.id,
+      title: order.title || originId
+    });
+
+    order.workspaceId = ws.workspaceId;
+    return ws;
+  }
+      originType,
+      originId,
+      activeOrderId: order.id,
+      title: order.title || originId
+    });
+
+    order.workspaceId = ws.workspaceId;
+    return ws;
   }
 
   public migrateLegacyOrders(orders: Order[], dryRun: boolean = false): { migratedCount: number; dryRun: boolean; details: string[] } {
@@ -143,9 +215,9 @@ class WorkspaceService {
         migratedCount++;
         if (!dryRun) {
           const ws = this.ensureWorkspaceForOrder(o);
-          details.push(`Migrated order ${o.id} to workspace ${ws.workspaceId}`);
+          details.push(`Migrated order ${o.id} to dedicated workspace ${ws.workspaceId}`);
         } else {
-          details.push(`[DryRun] Would migrate order ${o.id} to workspace for buyer ${o.buyerId} & seller ${o.sellerId}`);
+          details.push(`[DryRun] Would migrate order ${o.id} to dedicated workspace`);
         }
       }
     }
@@ -154,9 +226,12 @@ class WorkspaceService {
 
   public deleteWorkspace(workspaceId: string) {
     if (this.workspaces.delete(workspaceId)) {
-      this.saveToDisk();
+      postgresStore.deleteWorkspace(workspaceId).catch(err => {
+        console.error(`[WorkspaceService] Failed to delete workspace ${workspaceId} from PostgreSQL:`, err);
+      });
     }
   }
 }
 
 export const workspaceService = new WorkspaceService();
+

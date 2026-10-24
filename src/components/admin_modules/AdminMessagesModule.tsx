@@ -6,6 +6,7 @@ import {
   User, Ban, ShieldAlert, ArrowRight, Download, Send, AlertCircle,
   Phone, Mail, DollarSign, Lock, CheckCircle2, MessageCircle
 } from 'lucide-react';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface ChatMessage {
   id: string;
@@ -349,9 +350,10 @@ export const AdminMessagesModule: React.FC<AdminMessagesModuleProps> = ({
                       <div className="space-y-2">
                         <div className="flex items-center gap-2">
                           <img
-                            src={thread.participantOne.avatar}
+                            src={thread.participantOne.avatar || DEFAULT_AVATAR}
                             alt=""
                             className="w-6 h-6 rounded-full object-cover border border-slate-200"
+                            onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                           />
                           <div>
                             <span className="font-semibold text-slate-900">{thread.participantOne.name}</span>
@@ -360,9 +362,10 @@ export const AdminMessagesModule: React.FC<AdminMessagesModuleProps> = ({
                         </div>
                         <div className="flex items-center gap-2">
                           <img
-                            src={thread.participantTwo.avatar}
+                            src={thread.participantTwo.avatar || DEFAULT_AVATAR}
                             alt=""
                             className="w-6 h-6 rounded-full object-cover border border-slate-200"
+                            onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                           />
                           <div>
                             <span className="font-semibold text-slate-900">{thread.participantTwo.name}</span>
@@ -501,7 +504,12 @@ export const AdminMessagesModule: React.FC<AdminMessagesModuleProps> = ({
                 >
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="flex items-center gap-2">
-                      <img src={msg.senderAvatar} alt="" className="w-5 h-5 rounded-full object-cover" />
+                      <img 
+                        src={msg.senderAvatar || DEFAULT_AVATAR} 
+                        alt="" 
+                        className="w-5 h-5 rounded-full object-cover" 
+                        onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
+                      />
                       <span className="text-xs font-bold text-slate-900">{msg.senderName}</span>
                       <span className="text-[10px] uppercase font-bold text-slate-400">({msg.senderRole})</span>
                     </div>

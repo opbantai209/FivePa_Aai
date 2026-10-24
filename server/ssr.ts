@@ -21,7 +21,7 @@ export async function setupSSR(
   app: Express,
   isProd: boolean,
   root: string,
-  getData: () => { gigs: any[]; users: any[]; projects: any[]; categories: any[] }
+  getData: () => Promise<{ gigs: any[]; users: any[]; projects: any[]; categories: any[] }> | { gigs: any[]; users: any[]; projects: any[]; categories: any[] }
 ) {
   let vite: any;
   let templateHtml: string = '';
@@ -42,7 +42,7 @@ export async function setupSSR(
     app.use(vite.middlewares);
     templateHtml = fs.readFileSync(path.resolve(root, 'index.html'), 'utf-8');
 
-    // Pre-warm SSR module and critical client assets in background so first visitor gets instant response
+    // Pre-warm SSR module and critical client assets in background
     Promise.all([
       vite.ssrLoadModule('/src/entry-server.tsx').then((mod: any) => {
         ssrRender = mod.render;
@@ -110,7 +110,7 @@ export async function setupSSR(
       const pathParts = pathname.split('/').filter(Boolean);
 
       // 1. Load current PUBLIC data
-      const rawData = getData();
+      const rawData = await getData();
       const PUBLIC_GIGS = rawData.gigs.filter(isGigPublic).map(sanitizePublicGig);
       const PUBLIC_USERS = rawData.users.filter(isUserPublic).map(sanitizePublicUser);
       const PUBLIC_PROJECTS = rawData.projects.filter(isProjectPublic).map(sanitizePublicProject);
@@ -147,56 +147,45 @@ export async function setupSSR(
         initialData.pageType = 'projects';
       } else if (['/freelancers', '/search-freelancers', '/freelancer-search'].includes(pathname)) {
         initialData.pageType = 'freelancers';
+      } else if (pathParts.length >= 2 && (pathParts[0].toLowerCase() === 'gig' || pathParts[0].toLowerCase() === 'gigs')) {
+        const gigId = pathParts[1];
+        const subSlug = pathParts[2];
+        const matchedGig = PUBLIC_GIGS.find(g => g.id === gigId || (g.slug && g.slug.toLowerCase() === gigId.toLowerCase()) || (subSlug && g.slug && g.slug.toLowerCase() === subSlug.toLowerCase()));
+        if (matchedGig) {
+          initialData.pageType = 'gig_detail';
+          initialData.gig = matchedGig;
+        } else {
+          notFound = true;
+        }
       } else if (pathParts.length === 2 && (pathParts[0].toLowerCase() === 'projects' || pathParts[0].toLowerCase() === 'project')) {
-        const slugParam = pathParts[1].toLowerCase();
-        const matchedProject = PUBLIC_PROJECTS.find(p => (p.slug && p.slug.toLowerCase() === slugParam) || p.id.toLowerCase() === slugParam || (p.title && slugify(p.title).toLowerCase() === slugParam));
-        if (matchedProject) {
-          initialData.pageType = 'project-detail';
-          initialData.project = matchedProject;
+        const projId = pathParts[1];
+        const matchedProj = PUBLIC_PROJECTS.find(p => p.id === projId || (p.slug && p.slug.toLowerCase() === projId.toLowerCase()));
+        if (matchedProj) {
+          initialData.pageType = 'project_detail';
+          initialData.project = matchedProj;
         } else {
           notFound = true;
         }
-      } else if (pathParts.length === 2 && (pathParts[0].toLowerCase() === 'freelancers' || pathParts[0].toLowerCase() === 'profile')) {
-        const usernameParam = pathParts[1].toLowerCase();
-        const matchedUser = PUBLIC_USERS.find(u => (u.username && u.username.toLowerCase() === usernameParam) || slugify(u.name).toLowerCase() === usernameParam);
-        if (matchedUser) {
-          initialData.pageType = 'profile';
-          initialData.profileUser = matchedUser;
-        } else {
-          notFound = true;
-        }
-      } else if (pathParts.length === 2 && pathParts[0].toLowerCase() === 'gigs') {
-        const gigParam = pathParts[1].toLowerCase();
-        const matchedGig = PUBLIC_GIGS.find(g => g.id.toLowerCase() === gigParam || (g.slug && g.slug.toLowerCase() === gigParam));
-        if (matchedGig) {
-          initialData.pageType = 'gig-detail';
-          initialData.gig = matchedGig;
-          initialData.gigUrl = getGigUrl(matchedGig);
-        } else {
-          notFound = true;
-        }
-      } else if (pathParts.length === 2 && !RESERVED_ROUTES.includes(pathParts[0].toLowerCase())) {
-        const usernameParam = pathParts[0].toLowerCase();
-        const slugParam = pathParts[1].toLowerCase();
-
+      } else if (pathParts.length === 2 && RESERVED_ROUTES.includes(pathParts[0].toLowerCase())) {
+        notFound = true;
+      } else if (pathParts.length === 2) {
+        const [username, gigSlug] = pathParts;
         const matchedGig = PUBLIC_GIGS.find(g => {
-          const gUname = (g.freelancerUsername || slugify(g.freelancerName)).toLowerCase();
-          const gSlug = (g.slug || slugify(g.title)).toLowerCase();
-          return gUname === usernameParam && gSlug === slugParam;
+          const gUrl = getGigUrl(g).toLowerCase();
+          const target = `/${username.toLowerCase()}/${gigSlug.toLowerCase()}`;
+          return gUrl === target || (g.slug && g.slug.toLowerCase() === gigSlug.toLowerCase()) || g.id === gigSlug;
         });
-
         if (matchedGig) {
-          initialData.pageType = 'gig-detail';
+          initialData.pageType = 'gig_detail';
           initialData.gig = matchedGig;
-          initialData.gigUrl = getGigUrl(matchedGig);
         } else {
           notFound = true;
         }
-      } else if (pathParts.length === 1 && !RESERVED_ROUTES.includes(pathParts[0].toLowerCase())) {
-        const usernameParam = pathParts[0].toLowerCase();
-        const matchedUser = PUBLIC_USERS.find(u => (u.username && u.username.toLowerCase() === usernameParam) || slugify(u.name).toLowerCase() === usernameParam);
+      } else if (pathParts.length === 1) {
+        const usernameParam = pathParts[0];
+        const matchedUser = PUBLIC_USERS.find(u => (u.username && u.username.toLowerCase() === usernameParam.toLowerCase()) || slugify(u.name) === usernameParam.toLowerCase() || u.id === usernameParam);
         if (matchedUser) {
-          initialData.pageType = 'profile';
+          initialData.pageType = 'freelancer_profile';
           initialData.profileUser = matchedUser;
         } else {
           notFound = true;
@@ -234,11 +223,13 @@ export async function setupSSR(
 
       const rendered = renderFn ? renderFn(pathname, initialData) : { html: '', head: '' };
 
+      const serializedInitialData = JSON.stringify(initialData).replace(/</g, '\\u003c');
+
       const finalHtml = template
         .replace('</head>', `${rendered.head}\n</head>`)
         .replace(
           '<div id="root"></div>',
-          `<div id="root">${rendered.html}</div>\n<script>window.__INITIAL_DATA__ = ${JSON.stringify(initialData).replace(/</g, '\\u003c')};</script>`
+          `<div id="root">${rendered.html}</div>\n<script>window.__INITIAL_DATA__ = ${serializedInitialData};</script>`
         );
 
       const statusCode = notFound ? 404 : 200;

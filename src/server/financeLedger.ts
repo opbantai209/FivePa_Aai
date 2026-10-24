@@ -25,8 +25,8 @@ export const CHART_OF_ACCOUNTS: ChartOfAccount[] = [
   { code: '3010', name: 'Opening Balance Equity', type: 'equity', normalBalance: 'credit', description: 'Opening balances carried over when the ledger was introduced' },
   { code: '2050', name: 'Pending Refund Liabilities', type: 'liability', normalBalance: 'credit', description: 'Approved refund amounts queued for payment processor reversal' },
   { code: '4010', name: 'Marketplace Platform Commission Fee', type: 'revenue', normalBalance: 'credit', description: 'Platform commission (default 20%) taken from the gig price when escrow is released' },
-  { code: '4020', name: 'Client Service Fee Revenue', type: 'revenue', normalBalance: 'credit', description: 'Client service fee (default 5.5% of gig price) collected at checkout' },
-  { code: '4030', name: 'Small-Order Fee Revenue', type: 'revenue', normalBalance: 'credit', description: 'Flat small-order fee (default $3.50 under $200) collected at checkout' },
+  { code: '4020', name: 'Client Service Fee Revenue', type: 'revenue', normalBalance: 'credit', description: 'Client service fee (default 1% of gig price) collected at checkout' },
+  { code: '4030', name: 'Small-Order Fee Revenue', type: 'revenue', normalBalance: 'credit', description: 'Flat small-order fee (default $1 under $200) collected at checkout' },
   { code: '5010', name: 'Payment Processing Gateway Fees', type: 'expense', normalBalance: 'debit', description: 'Merchant fees charged by Stripe, Razorpay, or banks' },
   { code: '5020', name: 'Administrative & Goodwill Adjustments', type: 'expense', normalBalance: 'debit', description: 'Compensatory credits and goodwill dispute write-offs' },
 ];
@@ -218,6 +218,14 @@ export class FinanceLedgerEngine {
   private minimumWithdrawalAmount: number = 3;
   private maximumWithdrawalAmount: number = 5000;
 
+  private assertProductionAuthority() {
+    if (process.env.NODE_ENV === 'production' || process.env.POSTGRES_URL || process.env.DATABASE_URL || true) {
+      // FIX 11: FinanceLedgerEngine must never act as an independent mutable financial authority.
+      // PostgreSQL is the single financial source of truth.
+      throw new Error('Legacy financeLedger cannot act as an independent financial authority. PostgreSQL financialTransactionService is authoritative.');
+    }
+  }
+
   constructor() {
     this.loadFromDisk();
   }
@@ -336,6 +344,7 @@ export class FinanceLedgerEngine {
     timestamp?: string;
     notes?: string;
   }): LedgerJournal {
+    this.assertProductionAuthority();
     if (!params.idempotencyKey) throw new Error('An idempotency key is required for every journal.');
     if (this.idempotencyKeys.has(params.idempotencyKey)) {
       const existing = this.journals.find(j => j.idempotencyKey === params.idempotencyKey);

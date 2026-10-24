@@ -22,8 +22,8 @@ if (typeof window !== 'undefined') {
   };
 }
 
-const initialData = window.__INITIAL_DATA__;
-const initialPath = window.location.pathname;
+const initialData = typeof window !== 'undefined' ? window.__INITIAL_DATA__ : undefined;
+const initialPath = typeof window !== 'undefined' ? window.location.pathname : '/';
 const rootElement = document.getElementById('root')!;
 
 if (rootElement.hasChildNodes() && initialData) {

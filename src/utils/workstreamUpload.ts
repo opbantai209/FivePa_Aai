@@ -9,7 +9,7 @@ interface UploadResult {
   url: string;
 }
 
-export async function uploadWorkstreamFile(file: File): Promise<UploadResult> {
+export async function uploadWorkstreamFile(file: File, orderId?: string, workspaceId?: string): Promise<UploadResult> {
   // 1. Client-side validation
   const fileSizeMB = file.size / (1024 * 1024);
   if (fileSizeMB > MAX_FILE_SIZE_MB) {
@@ -17,7 +17,11 @@ export async function uploadWorkstreamFile(file: File): Promise<UploadResult> {
   }
 
   // 2. Upload
-  const res = await fetch(`/api/workstream/upload?name=${encodeURIComponent(file.name)}`, {
+  let url = `/api/workstream/upload?name=${encodeURIComponent(file.name)}`;
+  if (orderId) url += `&orderId=${encodeURIComponent(orderId)}`;
+  if (workspaceId) url += `&workspaceId=${encodeURIComponent(workspaceId)}`;
+
+  const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': file.type || 'application/octet-stream',

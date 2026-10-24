@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { createHmac, timingSafeEqual } from 'crypto';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { users, type User } from '../store.js';
+import { store, type User } from '../store.js';
 import { disconnectUserSessionSocket } from '../websocket.js';
 
 const isCompiledProductionBundle = path.basename(fileURLToPath(import.meta.url)).startsWith('server.js');
@@ -92,20 +92,6 @@ export function verifyToken(token: string): { id: string; role: string; email: s
       return null;
     }
 
-    const dbUser = users.find(u => u.id === payload.id);
-    if (dbUser) {
-      if (payload.sessionVersion !== undefined) {
-        const activeSessions = getUserActiveSessions(dbUser);
-        if (!activeSessions.includes(payload.sessionVersion)) {
-          if (payload.sessionVersion === dbUser.sessionVersion) {
-            activeSessions.push(payload.sessionVersion);
-          } else {
-            return null; // Session evicted or invalidated
-          }
-        }
-      }
-    }
-
     return payload;
   } catch {
     return null;
@@ -113,14 +99,27 @@ export function verifyToken(token: string): { id: string; role: string; email: s
 }
 
 // Global Authentication Middleware: verifies cryptographic signed JWT/session and populates req.user
-export function verifyAuthTokenMiddleware(req: Request, res: Response, next: NextFunction) {
+export async function verifyAuthTokenMiddleware(req: Request, res: Response, next: NextFunction) {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7).trim();
     const payload = verifyToken(token);
     if (payload) {
-      const dbUser = users.find(u => u.id === payload.id);
+      const dbUser = await store.getUser(payload.id);
       if (dbUser) {
+        if (payload.sessionVersion !== undefined) {
+          const activeSessions = getUserActiveSessions(dbUser);
+          if (!activeSessions.includes(payload.sessionVersion)) {
+            if (payload.sessionVersion === dbUser.sessionVersion) {
+              activeSessions.push(payload.sessionVersion);
+            } else {
+              (req as any).user = null;
+              (req as any).authenticatedUserId = null;
+              (req as any).authenticatedUser = null;
+              return next();
+            }
+          }
+        }
         (req as any).user = {
           id: dbUser.id,
           role: dbUser.role,
@@ -149,6 +148,8 @@ export function resolveAuthenticatedUserId(req: Request): string | null {
 }
 
 const rateBuckets = new Map<string, { count: number; resetAt: number }>();
+let lastPruneTime = Date.now();
+
 export function rateLimit(max: number, windowMs: number, prefix: string = '') {
   return (req: Request, res: Response, next: NextFunction) => {
     if (process.env.NODE_ENV === 'test') {
@@ -158,6 +159,15 @@ export function rateLimit(max: number, windowMs: number, prefix: string = '') {
     const route = prefix || req.route?.path || req.path;
     const key = `${route}:${identity}`;
     const now = Date.now();
+
+    // Periodic cleanup of expired rate buckets to prevent unbounded memory growth
+    if (now - lastPruneTime > 60000 || rateBuckets.size > 500) {
+      lastPruneTime = now;
+      for (const [k, r] of rateBuckets.entries()) {
+        if (now > r.resetAt) rateBuckets.delete(k);
+      }
+    }
+
     const record = rateBuckets.get(key) || { count: 0, resetAt: now + windowMs };
     if (now > record.resetAt) {
       record.count = 0;
@@ -195,12 +205,15 @@ export function orderParticipantSafeUser(user: any) {
   };
 }
 
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authUserId = resolveAuthenticatedUserId(req);
   if (!authUserId) {
     return res.status(401).json({ error: 'Authentication required. Please provide a valid session token.' });
   }
-  const u = users.find(user => user.id === authUserId);
+  let u = (req as any).authenticatedUser;
+  if (!u || u.id !== authUserId) {
+    u = await store.getUser(authUserId);
+  }
   if (!u) {
     return res.status(401).json({ error: 'User account not found.' });
   }
@@ -236,19 +249,21 @@ export function canAccessOrderWorkstream(user: any, order: { buyerId: string; se
 }
 
 export function adminActor(req: Request): string {
-  const authUserId = resolveAuthenticatedUserId(req);
-  const u = authUserId ? users.find(user => user.id === authUserId) : null;
-  if (u) return `${u.name} (${u.role || 'admin'})`;
+  const authUser = (req as any).authenticatedUser;
+  if (authUser) return `${authUser.name} (${authUser.role || 'admin'})`;
   return 'Administrator';
 }
 
 export function requireRole(allowedRoles: string[]) {
-  return (req: Request, res: Response, next: NextFunction) => {
+  return async (req: Request, res: Response, next: NextFunction) => {
     const authUserId = resolveAuthenticatedUserId(req);
     if (!authUserId) {
       return res.status(401).json({ error: 'Authentication required.' });
     }
-    const u = users.find(user => user.id === authUserId);
+    let u = (req as any).authenticatedUser;
+    if (!u || u.id !== authUserId) {
+      u = await store.getUser(authUserId);
+    }
     if (!u) {
       return res.status(401).json({ error: 'User not found.' });
     }
@@ -261,12 +276,15 @@ export function requireRole(allowedRoles: string[]) {
   };
 }
 
-export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+export async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const authUserId = resolveAuthenticatedUserId(req);
   if (!authUserId) {
     return res.status(401).json({ error: 'Authentication required. Valid admin session missing.' });
   }
-  const u = users.find(user => user.id === authUserId);
+  let u = (req as any).authenticatedUser;
+  if (!u || u.id !== authUserId) {
+    u = await store.getUser(authUserId);
+  }
   if (!u || (u.role !== 'super_admin' && u.role !== 'admin')) {
     return res.status(403).json({ error: 'Forbidden: Administrator privileges required.' });
   }

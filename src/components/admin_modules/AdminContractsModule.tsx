@@ -5,6 +5,7 @@ import {
   TrendingUp, DollarSign, ShieldCheck, User, Calendar, Award,
   ArrowRight, ShieldAlert, Ban, Layers
 } from 'lucide-react';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface Milestone {
   id: string;
@@ -271,17 +272,19 @@ export const AdminContractsModule: React.FC<AdminContractsModuleProps> = ({
                         <div className="space-y-1.5">
                           <div className="flex items-center gap-2">
                             <img
-                              src={contract.clientAvatar}
+                              src={contract.clientAvatar || DEFAULT_AVATAR}
                               alt={contract.clientName}
                               className="w-5 h-5 rounded-full object-cover"
+                              onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                             />
                             <span className="font-semibold text-slate-800 text-[11px]">Client: {contract.clientName}</span>
                           </div>
                           <div className="flex items-center gap-2">
                             <img
-                              src={contract.freelancerAvatar}
+                              src={contract.freelancerAvatar || DEFAULT_AVATAR}
                               alt={contract.freelancerName}
                               className="w-5 h-5 rounded-full object-cover"
+                              onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                             />
                             <span className="font-semibold text-slate-800 text-[11px]">Dev: {contract.freelancerName}</span>
                           </div>

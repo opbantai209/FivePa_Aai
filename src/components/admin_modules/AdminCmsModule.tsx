@@ -5,6 +5,7 @@ import {
   BookOpen, Megaphone, ShieldAlert, Award, FileText, User, Tag,
   ExternalLink, Layers, ArrowUpRight, BarChart2
 } from 'lucide-react';
+import { DEFAULT_AVATAR } from '../../constants';
 
 export type CmsCategory = 'announcement' | 'help_faq' | 'platform_policy' | 'guide' | 'legal';
 export type CmsStatus = 'published' | 'draft' | 'scheduled' | 'archived';
@@ -144,7 +145,7 @@ export const AdminCmsModule: React.FC<AdminCmsModuleProps> = ({
         excerpt: formData.excerpt || '',
         content: formData.content || '',
         authorName: 'Platform Administrator',
-        authorAvatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop',
+        authorAvatar: DEFAULT_AVATAR,
         status: (formData.status as CmsStatus) || 'draft',
         viewsCount: 0,
         featured: !!formData.featured,
@@ -361,9 +362,10 @@ export const AdminCmsModule: React.FC<AdminCmsModuleProps> = ({
                     <td className="py-4 px-6">
                       <div className="flex items-center gap-2">
                         <img
-                          src={article.authorAvatar}
+                          src={article.authorAvatar || DEFAULT_AVATAR}
                           alt=""
                           className="w-6 h-6 rounded-full object-cover border border-slate-200"
+                          onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                         />
                         <span className="text-slate-800 font-medium truncate max-w-[120px]">{article.authorName}</span>
                       </div>
@@ -626,7 +628,12 @@ export const AdminCmsModule: React.FC<AdminCmsModuleProps> = ({
               <h1 className="text-2xl font-bold text-slate-900">{previewingArticle.title}</h1>
               <div className="flex items-center gap-3 mt-3 text-xs text-slate-500">
                 <div className="flex items-center gap-2">
-                  <img src={previewingArticle.authorAvatar} alt="" className="w-5 h-5 rounded-full object-cover" />
+                  <img 
+                    src={previewingArticle.authorAvatar || DEFAULT_AVATAR} 
+                    alt="" 
+                    className="w-5 h-5 rounded-full object-cover" 
+                    onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
+                  />
                   <span className="font-semibold text-slate-800">{previewingArticle.authorName}</span>
                 </div>
                 <span>•</span>

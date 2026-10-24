@@ -1,6 +1,7 @@
 import React from 'react';
 import { Heart, Trash2 } from 'lucide-react';
 import { Gig } from '../../types';
+import { DEFAULT_GIG_IMAGE } from '../../constants';
 
 interface WishlistModalProps {
   isOpen: boolean;
@@ -54,7 +55,12 @@ export const WishlistModal: React.FC<WishlistModalProps> = ({
               return (
                 <div key={gig.id} className="p-4 rounded-2xl border border-slate-200 bg-slate-50/60 flex items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
-                    <img src={gig.image} className="w-16 h-12 rounded-xl object-cover border border-slate-200" alt={gig.title} />
+                    <img 
+                      src={gig.image || DEFAULT_GIG_IMAGE} 
+                      className="w-16 h-12 rounded-xl object-cover border border-slate-200" 
+                      alt={gig.title} 
+                      onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE; }}
+                    />
                     <div>
                       <a 
                         href={gUrl} 

@@ -4,6 +4,7 @@ import { Gig, Review, UserAccount, Order } from '../../types';
 import { RelatedGigsSection } from './RelatedGigsSection';
 import { Reviews } from '../gig_reviews';
 import { PPH_CATEGORIES } from '../HeaderCategoriesNav';
+import { DEFAULT_AVATAR, DEFAULT_GIG_IMAGE } from '../../constants';
 
 const CATEGORY_SLUGS: Record<string, string> = {
   'All': 'all',
@@ -71,8 +72,8 @@ export const GigDetailView: React.FC<GigDetailViewProps> = ({
         <a href="/gigs" onClick={(e) => navigate('/gigs', e)} className="hover:text-fiverr-dark">Home</a>
         <span>/</span>
         <a 
-          href={`/categories/${CATEGORY_SLUGS[currentGig.category] || 'development-it'}`} 
-          onClick={(e) => navigate(`/categories/${CATEGORY_SLUGS[currentGig.category] || 'development-it'}`, e)} 
+          href={`/categories/${CATEGORY_SLUGS[currentGig.category] || 'technology-programming'}`} 
+          onClick={(e) => navigate(`/categories/${CATEGORY_SLUGS[currentGig.category] || 'technology-programming'}`, e)} 
           className="hover:text-fiverr-dark"
         >
           {currentGig.category}
@@ -90,9 +91,10 @@ export const GigDetailView: React.FC<GigDetailViewProps> = ({
         <div className="flex flex-wrap items-center gap-4 text-xs">
           <div className="flex items-center gap-2.5">
             <img 
-              src={currentGig.freelancerAvatar} 
+              src={currentGig.freelancerAvatar || DEFAULT_AVATAR} 
               alt={currentGig.freelancerName} 
               className="w-10 h-10 rounded-full object-cover ring-2 ring-slate-100" 
+              onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
             />
             <div>
               <span className="font-bold text-fiverr-dark block">{currentGig.freelancerName}</span>
@@ -149,11 +151,11 @@ export const GigDetailView: React.FC<GigDetailViewProps> = ({
             ) : (
               <div className="relative aspect-video bg-slate-900 flex items-center justify-center group cursor-pointer" onClick={() => setIsPuppetVideoPlaying(true)}>
                 <img 
-                  src={currentGig.image} 
+                  src={currentGig.image || DEFAULT_GIG_IMAGE} 
                   alt={currentGig.title} 
                   referrerPolicy="no-referrer"
                   onError={(e) => {
-                    (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1563089145-599997674d42?w=800&h=500&fit=crop';
+                    (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE;
                   }}
                   className="w-full h-full object-cover opacity-80 group-hover:opacity-90 transition-opacity" 
                 />
@@ -206,9 +208,10 @@ export const GigDetailView: React.FC<GigDetailViewProps> = ({
             
             <div className="flex items-center gap-4">
               <img 
-                src={currentGig.freelancerAvatar} 
+                src={currentGig.freelancerAvatar || DEFAULT_AVATAR} 
                 alt={currentGig.freelancerName} 
                 className="w-16 h-16 rounded-full object-cover ring-4 ring-slate-100" 
+                onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
               />
               <div>
                 <h3 className="text-base font-bold text-fiverr-dark">{currentGig.freelancerName}</h3>

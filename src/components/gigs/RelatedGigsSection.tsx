@@ -2,6 +2,7 @@ import React from 'react';
 import { Star, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
 import { Gig } from '../../types';
 import { slugify } from '../../utils/slugify';
+import { Avatar, GigImage } from '../../components/ui';
 
 interface RelatedGigsSectionProps {
   currentGig: Gig;
@@ -73,22 +74,17 @@ export const RelatedGigsSection: React.FC<RelatedGigsSectionProps> = ({
           >
             <div>
               <div className="relative aspect-video bg-slate-100 overflow-hidden">
-                <img
+                <GigImage
                   src={gig.image}
-                  alt={gig.title}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1563089145-599997674d42?w=800&h=500&fit=crop';
-                  }}
+                  title={gig.title}
+                  category={gig.category}
+                  className="w-full h-full group-hover:scale-105 transition-transform duration-300"
                 />
-                <span className="absolute top-2 left-2 text-[10px] font-bold px-2 py-0.5 rounded-md bg-white/90 text-slate-800 uppercase tracking-wider backdrop-blur-xs shadow-xs">
-                  {gig.category}
-                </span>
               </div>
 
               <div className="p-3.5 space-y-2">
                 <div className="flex items-center gap-2 min-w-0">
-                  <img src={gig.freelancerAvatar} alt={gig.freelancerName} className="w-5 h-5 rounded-full object-cover shrink-0" />
+                  <Avatar src={gig.freelancerAvatar} name={gig.freelancerName} size="xs" />
                   <span className="text-xs font-semibold text-fiverr-dark truncate">{gig.freelancerName}</span>
                 </div>
 

@@ -5,6 +5,7 @@ import {
   FileText, Lock, Globe, Server, CheckCircle2, X, Terminal, Database,
   ArrowUpRight, AlertCircle, Key, UserCheck, DollarSign
 } from 'lucide-react';
+import { DEFAULT_AVATAR } from '../../constants';
 
 export type EventSeverity = 'info' | 'warning' | 'critical' | 'security';
 export type EventCategory = 'auth' | 'financial' | 'moderation' | 'system' | 'user_management';
@@ -263,9 +264,10 @@ export const AdminActivityModule: React.FC<AdminActivityModuleProps> = ({
                     <td className="py-4 px-6">
                       <div className="flex items-center gap-2">
                         <img
-                          src={log.adminAvatar}
+                          src={log.adminAvatar || DEFAULT_AVATAR}
                           alt=""
                           className="w-6 h-6 rounded-full object-cover border border-slate-200"
+                          onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                         />
                         <div>
                           <div className="font-semibold text-slate-900">{log.adminName}</div>

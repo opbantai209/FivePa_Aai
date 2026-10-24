@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Search, Star, ShieldCheck, Clock, CheckCircle2, AlertCircle, ArrowUpRight, MessageSquare, PlusCircle } from 'lucide-react';
 import { WorkstreamItem } from './types';
 import { getStatusBadge } from '../../utils/formatters';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface WorkstreamListProps {
   workstreams: WorkstreamItem[];
@@ -221,9 +222,10 @@ export const WorkstreamList: React.FC<WorkstreamListProps> = ({
                       <td className="py-4 px-4">
                         <div className="flex items-center gap-3">
                           <img
-                            src={w.seller?.avatar || 'https://images.unsplash.com/photo-1522075469751-3a6694fb2f61?w=100&h=100&fit=crop'}
+                            src={w.seller?.avatar || DEFAULT_AVATAR}
                             className="w-8 h-8 rounded-full object-cover ring-1 ring-slate-200 shrink-0"
                             alt={w.seller?.name || 'Partner'}
+                            onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                           />
                           <div className="min-w-0">
                             <span className="font-bold text-fiverr-dark truncate block">

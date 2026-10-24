@@ -1,13 +1,6 @@
 import { randomUUID } from 'crypto';
 import {
-  orders,
-  users,
-  gigs,
-  disputes,
-  refunds,
-  messages,
-  auditLogs,
-  workstreamOffers,
+  store,
   type Order,
   type Gig,
   type User,
@@ -15,14 +8,15 @@ import {
   type AuditLog,
   type Message
 } from '../store.js';
-import { postgresStore } from '../db/postgresStore.js';
-import { financeLedger } from '../../src/server/financeLedger.js';
-import { financialTransactionService } from './financialService.js';
+import { postgresStore, isPostgresEnabled } from '../db/postgresStore.js';
+import { financialTransactionService, financialRepository } from './financialService.js';
 import { siteSettings } from '../../src/server/siteSettings.js';
 import { workspaceService } from '../../src/server/workspaceService.js';
 import { emitSystemEvent, recordMessage, registerMessage, messageIndex } from './messagingService.js';
 import { createNotification, sendOrderEmail } from './notificationService.js';
 import { recalculateUserRating } from './reviewService.js';
+import { broadcastMessage } from '../websocket.js';
+import { diagnosticService } from './diagnosticService.js';
 
 export interface ClearingEarning {
   orderId: string;
@@ -39,22 +33,39 @@ export function getUnclearedEarnings(userId: string): number {
     .reduce((sum, e) => sum + e.amount, 0);
 }
 
-export function getActiveEscrowRemaining(order: Order): number {
-  const esc = financeLedger.getEscrow(order.id);
+export async function getActiveEscrowRemaining(order: Order): Promise<number> {
+  const esc = await financialRepository.getEscrow(order.id);
   if (esc) return esc.remaining;
   return (order.status === 'completed' || order.status === 'cancelled') ? 0 : Number(order.amount || 0);
 }
 
-export const orderIndex = new Map<string, Order>();
-const _origOrderIndexGet = orderIndex.get.bind(orderIndex);
-orderIndex.get = function(id: string) {
-  let val = _origOrderIndexGet(id);
-  if (!val && id) {
-    val = orders.find(o => o.id === id);
-    if (val) orderIndex.set(id, val);
+export async function hasCommittedFinancialState(orderId: string, client?: any): Promise<boolean> {
+  const pool = client || postgresStore.getPool();
+  try {
+    const escRes = await pool.query(
+      "SELECT order_id FROM escrows WHERE order_id = $1 AND (status IN ('held', 'released', 'refunded', 'disputed', 'split') OR remaining > 0 OR released_gross > 0 OR refunded_total > 0)",
+      [orderId]
+    );
+    if (escRes.rows.length > 0) return true;
+
+    const ledRes = await pool.query(
+      "SELECT id FROM ledger_entries WHERE order_id = $1 LIMIT 1",
+      [orderId]
+    );
+    if (ledRes.rows.length > 0) return true;
+
+    const ordRes = await pool.query(
+      "SELECT id FROM orders WHERE id = $1 AND status IN ('funded_in_escrow', 'in_progress', 'delivered', 'completed', 'disputed', 'cancelled')",
+      [orderId]
+    );
+    if (ordRes.rows.length > 0) return true;
+  } catch (e) {
+    console.warn('[hasCommittedFinancialState] Error checking financial state:', e);
   }
-  return val;
-};
+  return false;
+}
+
+export const orderIndex = new Map<string, Order>();
 
 export const orderStateLocks = new Set<string>();
 
@@ -70,6 +81,7 @@ export function tryAcquireOrderLock(orderId: string, res: any): boolean {
     acquireOrderLock(orderId);
     return true;
   } catch (err: any) {
+    diagnosticService.log('security', 'orderService', 'tryAcquireOrderLock', 'server/services/orderService.ts', 'concurrency_lock', 'INTERCEPTED', { orderId }, err.message);
     res.status(409).json({ error: err.message });
     return false;
   }
@@ -86,84 +98,88 @@ export function registerOrder(o: Order) {
 
 export function recordOrder(o: Order) {
   workspaceService.ensureWorkspaceForOrder(o);
-  orders.unshift(o);
   registerOrder(o);
+  store.saveOrder(o).catch(err => console.error('[orderService] Error saving order:', err));
 }
 
-const MAX_AUDIT_LOGS = 2000;
 export function registerAuditLog(log: AuditLog) {
-  auditLogs.unshift(log);
-  if (auditLogs.length > MAX_AUDIT_LOGS) {
-    auditLogs.length = MAX_AUDIT_LOGS;
+  postgresStore.getPool().query(
+    `INSERT INTO audit_logs (id, actor, role, action, target, details, timestamp)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (id) DO UPDATE SET
+       actor = EXCLUDED.actor,
+       role = EXCLUDED.role,
+       action = EXCLUDED.action,
+       target = EXCLUDED.target,
+       details = EXCLUDED.details,
+       timestamp = EXCLUDED.timestamp`,
+    [log.id, log.actor, log.role, log.action, log.target, log.details || null, log.timestamp]
+  ).catch(err => console.error('[PostgresStore] Failed to save audit log:', err));
+}
+
+export function saveOrdersToDisk() { return Promise.resolve(); }
+export function saveUsersToPostgres() { return Promise.resolve(); }
+export function saveGigsToPostgres() { return Promise.resolve(); }
+
+export async function syncUserBalances() {
+  try {
+    await postgresStore.getPool().query(`
+      UPDATE users u
+      SET wallet_balance = w.available_balance
+      FROM wallets w
+      WHERE u.id = w.user_id
+    `);
+  } catch (err) {
+    console.error('[syncUserBalances] Error syncing balances:', err);
   }
-  postgresStore.saveAuditLogs(auditLogs).catch(err => console.error('[PostgresStore] Failed to save audit logs:', err));
 }
 
-export function saveOrdersToDisk() {
-  postgresStore.saveOrders(orders).catch(err => console.error('[PostgresStore] Failed to save orders:', err));
-}
-
-export function saveUsersToPostgres() {
-  postgresStore.saveUsers(users).catch(err => console.error('[PostgresStore] Failed to save users:', err));
-}
-
-export function saveGigsToPostgres() {
-  postgresStore.saveGigs(gigs).catch(err => console.error('[PostgresStore] Failed to save gigs:', err));
-}
-
-export function syncUserBalances() {
-  for (const u of users) {
-    const b = financeLedger.getWalletBalance(u.id);
-    if (b !== null) u.walletBalance = b;
+export async function ensureWallet(userId: string) {
+  try {
+    await financialTransactionService.ensureWallet(userId);
+  } catch (err) {
+    console.error(`[ensureWallet] Failed for user ${userId}:`, err);
   }
-}
-
-export function ensureWallet(userId: string) {
-  const u = users.find(x => x.id === userId);
-  const name = u?.name || `User ${userId}`;
-  const email = u?.email || `${userId}@example.com`;
-  const isFreelancer = (u && (gigs.some(g => g.freelancerId === u.id) || orders.some(o => o.sellerId === u.id) || u.role === 'freelancer' || u.role === 'seller')) || false;
-  const role = isFreelancer ? 'freelancer' : 'buyer';
-  financeLedger.ensureWallet({ userId: u?.id || userId, name, email, role });
 }
 
 export function syncIndexes() {
   orderIndex.clear();
   messageIndex.clear();
   clearingEarnings.length = 0;
-  for (const o of orders) {
-    registerOrder(o);
-    if (Array.isArray((o as any).clearingEarnings)) {
-      for (const ce of (o as any).clearingEarnings) {
-        if (!clearingEarnings.some(e => e.orderId === ce.orderId)) {
-          clearingEarnings.push(ce);
-        }
-      }
-    }
-  }
-  for (const m of messages) {
-    registerMessage(m);
-  }
-  for (const u of users) {
-    recalculateUserRating(u.id);
-  }
 }
 
-export function resolveGigOrderPrice(gigId: string, extraIds: unknown): { gig: Gig; gigPrice: number; extrasTitles: string[] } {
-  const gig = gigs.find(g => g.id === gigId);
-  if (!gig) throw Object.assign(new Error('Gig not found.'), { status: 404 });
-  if (gig.status && gig.status !== 'published') throw Object.assign(new Error('This gig is not available for ordering.'), { status: 400 });
-  const ids = Array.isArray(extraIds) ? Array.from(new Set(extraIds.map(String))) : [];
-  let cents = Math.round(Number(gig.price) * 100);
-  if (!Number.isFinite(cents) || cents <= 0) throw Object.assign(new Error('This gig has no valid price.'), { status: 400 });
-  const extrasTitles: string[] = [];
-  for (const id of ids) {
-    const extra = (gig.extras || []).find(e => e.id === id);
-    if (!extra) throw Object.assign(new Error(`Unknown add-on "${id}" for this gig.`), { status: 400 });
-    cents += Math.round(Number(extra.price) * 100);
-    extrasTitles.push(extra.title);
+export async function resolveGigOrderPrice(gigId: string, extraIds: unknown): Promise<{ gig: any; gigPrice: number; extrasTitles: string[] }> {
+  const res = await postgresStore.getPool().query('SELECT * FROM gigs WHERE id = $1', [gigId]);
+  if (res.rows.length === 0) {
+    const err: any = new Error('Gig not found.');
+    err.status = 404;
+    throw err;
   }
-  return { gig, gigPrice: cents / 100, extrasTitles };
+  const r = res.rows[0];
+  const basePrice = Number(r.price || 0);
+  const extras = Array.isArray(r.extras) ? r.extras : [];
+  const requestedIds = Array.isArray(extraIds) ? extraIds.map(String) : [];
+  let extrasTotal = 0;
+  const extrasTitles: string[] = [];
+  for (const ex of extras) {
+    if (ex && requestedIds.includes(String(ex.id))) {
+      extrasTotal += Number(ex.price || 0);
+      if (ex.title) extrasTitles.push(String(ex.title));
+    }
+  }
+  const gigPrice = Math.round((basePrice + extrasTotal) * 100) / 100;
+  return {
+    gig: {
+      id: r.id,
+      title: r.title,
+      price: basePrice,
+      freelancerId: r.freelancer_id,
+      deliveryDays: Number(r.delivery_days || 7),
+      extras
+    },
+    gigPrice,
+    extrasTitles
+  };
 }
 
 export function getReviewWindowStart(order: any, delivery: any): number {
@@ -210,10 +226,7 @@ export async function fundOrderEscrowWithEvent(params: { orderId: string; orderT
 
 export async function topUpOrderEscrowWithEvent(params: { orderId: string; orderTitle: string; amount: number; buyerId: string; sellerId: string; actor: string; skipMinimum?: boolean }) {
   const res = await financialTransactionService.topUpEscrow(params);
-  const order = orderIndex.get(params.orderId) || orders.find(o => o.id === params.orderId);
-  if (order) {
-    emitSystemEvent(order.id, 'escrow_funded', `🔒 Additional $${params.amount.toLocaleString()} funded into escrow for "${params.orderTitle}".`, { amount: params.amount, isTopUp: true });
-  }
+  emitSystemEvent(params.orderId, 'escrow_funded', `🔒 Additional $${params.amount.toLocaleString()} funded into escrow for "${params.orderTitle}".`, { amount: params.amount, isTopUp: true });
   return res;
 }
 
@@ -221,18 +234,22 @@ export async function releaseOrderFunds(order: Order, actor: string, reason: str
   if (requestKey && requestKeyCache.has(requestKey)) {
     return requestKeyCache.get(requestKey);
   }
+  const idempotencyKey = requestKey || `IDEMP-REL-${order.id}`;
   if (order.status === 'completed') {
-    const replayed = financeLedger.replay<{ journal: any; freelancerNet: number; platformFee: number }>(requestKey);
-    if (replayed) {
-      if (requestKey) requestKeyCache.set(requestKey, replayed);
-      return replayed;
+    if (isPostgresEnabled()) {
+      const pool = postgresStore.getPool();
+      const idempRes = await pool.query('SELECT result FROM financial_idempotency WHERE key = $1', [idempotencyKey]);
+      if (idempRes.rows.length > 0 && idempRes.rows[0].result) {
+        const replayed = idempRes.rows[0].result;
+        if (requestKey) requestKeyCache.set(requestKey, replayed);
+        return replayed;
+      }
     }
     throw new Error('Order is already completed; funds were already released.');
   }
   assertOrderOpen(order);
-  const result = await financialTransactionService.releaseOrderFunds({ orderId: order.id, actor, reason });
-  const resultData = result.result;
-  const { freelancerNet, platformFee } = resultData;
+  await store.saveOrder(order);
+  const result = await financialTransactionService.releaseOrderFunds({ orderId: order.id, actor, reason, idempotencyKey: requestKey });
 
   order.status = 'completed';
   if (!order.completedAt) {
@@ -242,24 +259,20 @@ export async function releaseOrderFunds(order: Order, actor: string, reason: str
     order.acceptedVersion = order.deliveryHistory[order.deliveryHistory.length - 1].version;
   }
 
-  const seller = users.find(u => u.id === order.sellerId);
-  if (seller && !releaseCompletedOrders.has(order.id)) {
-    releaseCompletedOrders.add(order.id);
-    seller.earned = (seller.earned || 0) + result.freelancerNet;
-    seller.completedJobs = (seller.completedJobs || 0) + 1;
-    if (order.orderType === 'gig' || order.gigOrderId) {
-      const entry = {
-        orderId: order.id,
-        sellerId: order.sellerId,
-        amount: result.freelancerNet,
-        clearsAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
-      };
-      clearingEarnings.push(entry);
-      (order as any).clearingEarnings = [...((order as any).clearingEarnings || []), entry];
-    }
+  const pool = postgresStore.getPool();
+  const updateRes = await pool.query(
+    "UPDATE orders SET status = 'completed', completed_at = COALESCE(completed_at, NOW()) WHERE id = $1 AND status <> 'completed' RETURNING *",
+    [order.id]
+  );
+  if (updateRes.rows.length > 0) {
+    await pool.query(
+      'UPDATE users SET earned = COALESCE(earned, 0) + $1, completed_jobs = COALESCE(completed_jobs, 0) + 1 WHERE id = $2',
+      [result.freelancerNet, order.sellerId]
+    );
   }
-  syncUserBalances();
-  postgresStore.saveOrders(orders);
+  releaseCompletedOrders.add(order.id);
+  await syncUserBalances();
+  await store.saveOrder(order);
 
   if (approvedByBuyer) {
     emitSystemEvent(order.id, 'deliverable_approved', `✅ Deliverables approved by buyer.`, {
@@ -299,24 +312,17 @@ export async function refundOrderFunds(order: Order, amount: number | undefined,
     refundCompletedOrders.add(order.id);
   }
 
-  const existingRecord = refunds.find(r => r.orderId === order.id && (r.status === 'pending' || r.amount === result.refunded));
-  if (existingRecord) {
-    existingRecord.status = 'approved';
-    existingRecord.amount = result.refunded;
-  } else {
-    refunds.push({
-      id: 'ref_' + randomUUID().slice(0, 12),
-      orderId: order.id,
-      buyerId: order.buyerId,
-      amount: result.refunded,
-      reason,
-      status: 'approved',
-      createdAt: new Date().toISOString().substring(0, 10)
-    });
-  }
-  syncUserBalances();
-  postgresStore.saveOrders(orders);
-  postgresStore.saveRefunds(refunds);
+  const refId = 'ref_' + randomUUID().slice(0, 12);
+  const pool = postgresStore.getPool();
+  await pool.query(
+    `INSERT INTO refunds (id, order_id, buyer_id, amount, reason, status, created_at)
+     VALUES ($1, $2, $3, $4, $5, 'approved', $6)
+     ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount, status = EXCLUDED.status`,
+    [refId, order.id, order.buyerId, result.refunded, reason, new Date().toISOString().substring(0, 10)]
+  );
+
+  await syncUserBalances();
+  await store.saveOrder(order);
 
   emitSystemEvent(order.id, 'escrow_refunded', `💸 Escrow refunded ($${result.refunded.toLocaleString()}) to buyer wallet. Reason: ${reason}`, {
     refunded: result.refunded,
@@ -337,30 +343,31 @@ export async function splitOrderFunds(order: Order, refundAmount: number, actor:
   if (!order.completedAt) {
     order.completedAt = new Date().toISOString();
   }
-  const seller = users.find(u => u.id === order.sellerId);
-  if (seller && !releaseCompletedOrders.has(order.id)) {
-    releaseCompletedOrders.add(order.id);
-    seller.earned = (seller.earned || 0) + result.release.freelancerNet;
-    seller.completedJobs = (seller.completedJobs || 0) + 1;
+
+  const pool = postgresStore.getPool();
+  const updateRes = await pool.query(
+    "UPDATE orders SET status = 'completed', completed_at = COALESCE(completed_at, NOW()) WHERE id = $1 AND status <> 'completed' RETURNING *",
+    [order.id]
+  );
+  if (updateRes.rows.length > 0) {
+    await pool.query(
+      'UPDATE users SET earned = COALESCE(earned, 0) + $1, completed_jobs = COALESCE(completed_jobs, 0) + 1 WHERE id = $2',
+      [result.release.freelancerNet, order.sellerId]
+    );
   }
-  const existingRecord = refunds.find(r => r.orderId === order.id && (r.status === 'pending' || r.amount === refundAmount));
-  if (existingRecord) {
-    existingRecord.status = 'approved';
-    existingRecord.amount = refundAmount;
-  } else {
-    refunds.push({
-      id: 'ref_' + randomUUID().slice(0, 12),
-      orderId: order.id,
-      buyerId: order.buyerId,
-      amount: refundAmount,
-      reason,
-      status: 'approved',
-      createdAt: new Date().toISOString().substring(0, 10)
-    });
-  }
-  syncUserBalances();
-  postgresStore.saveOrders(orders);
-  postgresStore.saveRefunds(refunds);
+  releaseCompletedOrders.add(order.id);
+
+  const refId = 'ref_' + randomUUID().slice(0, 12);
+  const pool = postgresStore.getPool();
+  await pool.query(
+    `INSERT INTO refunds (id, order_id, buyer_id, amount, reason, status, created_at)
+     VALUES ($1, $2, $3, $4, $5, 'approved', $6)
+     ON CONFLICT (id) DO UPDATE SET amount = EXCLUDED.amount, status = EXCLUDED.status`,
+    [refId, order.id, order.buyerId, refundAmount, reason, new Date().toISOString().substring(0, 10)]
+  );
+
+  await syncUserBalances();
+  await store.saveOrder(order);
 
   emitSystemEvent(order.id, 'escrow_refunded', `💸 Partial refund of $${refundAmount.toLocaleString()} returned to buyer wallet. Reason: ${reason}`, {
     refunded: refundAmount,
@@ -380,20 +387,25 @@ export async function splitOrderFunds(order: Order, refundAmount: number, actor:
 
 export function validateOrderReleasePreconditions(order: Order, isAdmin = false, isInvoiceApproval = false): { status: number; error: string } | null {
   if (order.status === 'completed') {
+    diagnosticService.log('security', 'orderService', 'validateOrderReleasePreconditions', 'server/services/orderService.ts', 'release_preconditions', 'INTERCEPTED', { orderId: order.id, status: order.status }, 'Order is already completed');
     return { status: 400, error: 'Order is already completed and payment has already been released.' };
   }
   if (order.status === 'cancelled') {
+    diagnosticService.log('security', 'orderService', 'validateOrderReleasePreconditions', 'server/services/orderService.ts', 'release_preconditions', 'INTERCEPTED', { orderId: order.id, status: order.status }, 'Order is cancelled; funds already refunded');
     return { status: 400, error: 'Order is cancelled; funds have been returned to the buyer.' };
   }
   if (!isAdmin && (order.status as string) === 'disputed') {
+    diagnosticService.log('security', 'orderService', 'validateOrderReleasePreconditions', 'server/services/orderService.ts', 'release_preconditions', 'INTERCEPTED', { orderId: order.id, status: order.status }, 'Cannot release payment while dispute is open');
     return { status: 400, error: 'Cannot release payment while an active dispute is open. The dispute must be resolved first.' };
   }
   if (!isAdmin && !isInvoiceApproval && order.status !== 'delivered') {
+    diagnosticService.log('security', 'orderService', 'validateOrderReleasePreconditions', 'server/services/orderService.ts', 'release_preconditions', 'INTERCEPTED', { orderId: order.id, status: order.status }, 'Payment release attempted before work was delivered');
     return { status: 400, error: 'Payment can only be released after the freelancer has submitted deliverables.' };
   }
   if (!isAdmin && !isInvoiceApproval && Array.isArray(order.revisions)) {
     const activeRev = order.revisions.some(r => r.status === 'requested');
     if (activeRev) {
+      diagnosticService.log('security', 'orderService', 'validateOrderReleasePreconditions', 'server/services/orderService.ts', 'release_preconditions', 'INTERCEPTED', { orderId: order.id, revisions: order.revisions }, 'Payment release attempted while revision is pending');
       return { status: 400, error: 'Cannot release payment while a revision is in progress. The freelancer must deliver the revised work first.' };
     }
   }
@@ -401,14 +413,17 @@ export function validateOrderReleasePreconditions(order: Order, isAdmin = false,
 }
 
 export function enrichOrderWithServiceInfo(o: Order, isAdmin: boolean = false) {
-  const seller = users.find(u => u.id === o.sellerId);
-  const buyer = users.find(u => u.id === o.buyerId);
+  const resolvedType = o.orderType || (o as any).type || (o.projectId ? 'project' : 'gig');
   const base = {
     ...o,
-    sellerName: seller?.name || 'Seller',
-    sellerAvatar: seller?.avatar,
-    buyerName: buyer?.name || 'Buyer',
-    buyerAvatar: buyer?.avatar
+    orderType: resolvedType,
+    type: resolvedType,
+    gigOrderId: o.gigOrderId || (resolvedType === 'gig' ? o.id : undefined),
+    projectOrderId: o.projectOrderId || (resolvedType === 'project' ? o.id : undefined),
+    sellerName: (o as any).sellerName || o.sellerUsername || 'Seller',
+    sellerAvatar: (o as any).sellerAvatar || '',
+    buyerName: (o as any).buyerName || o.buyerUsername || 'Buyer',
+    buyerAvatar: (o as any).buyerAvatar || ''
   };
   if (!isAdmin) {
     const { adminInternalNotes, adminHistory, ...sanitized } = base as any;
@@ -419,85 +434,54 @@ export function enrichOrderWithServiceInfo(o: Order, isAdmin: boolean = false) {
 
 export async function processCancellationTimeouts() {
   const now = Date.now();
-  for (const order of orders) {
-    if (!order.cancellationRequest || order.cancellationRequest.status !== 'pending') continue;
-    if (order.orderType !== 'gig' && !order.gigOrderId) continue;
-    const respondByTime = new Date(order.cancellationRequest.respondBy).getTime();
+  const pool = postgresStore.getPool();
+  try {
+    const res = await pool.query(
+      "SELECT id FROM orders WHERE status NOT IN ('completed', 'cancelled') AND cancellation_request IS NOT NULL"
+    );
+    for (const r of res.rows) {
+      const order = await store.getOrder(r.id);
+      if (!order || !order.cancellationRequest || order.cancellationRequest.status !== 'pending') continue;
+      const respondByTime = new Date(order.cancellationRequest.respondBy).getTime();
 
-    // Reminder about 12 hours before the 48h deadline (sent once)
-    const requestedAtMs = new Date(order.cancellationRequest.requestedAt).getTime();
-    if (!order.cancellationRequest.reminderSentAt && now - requestedAtMs >= 36 * 60 * 60 * 1000 && now <= respondByTime) {
-      order.cancellationRequest.reminderSentAt = new Date().toISOString();
-      postgresStore.saveOrders(orders);
-      const responderId = order.cancellationRequest.requesterId === order.buyerId ? order.sellerId : order.buyerId;
-      createNotification({
-        userId: responderId,
-        title: 'Cancellation request expires soon',
-        message: `Order #${order.id}: about 12 hours left to respond before it is cancelled automatically.`,
-        type: 'order',
-        link: `/messages/${order.id}`,
-        dedupKey: `cancel_reminder_${order.id}_${order.cancellationRequest.requestedAt}`
-      });
-      sendOrderEmail(
-        responderId,
-        'Reminder: cancellation request expires in about 12 hours',
-        `A cancellation request on order #${order.id} is still waiting for your answer. If you do not accept or decline within about 12 hours, the order is cancelled automatically and the payment is refunded.`,
-        `/messages/${order.id}`
-      );
-    }
+      if (now > respondByTime) {
+        if (orderStateLocks.has(order.id)) continue;
+        try {
+          acquireOrderLock(order.id);
+        } catch {
+          continue;
+        }
+        try {
+          const requestKey = `cancel_timeout_${order.id}_${order.cancellationRequest.requestedAt}`;
+          const refundRes = await refundOrderFunds(order, undefined, 'System Auto-Cancel', 'Cancellation request auto-cancelled after 48h timeout', requestKey);
+          order.cancellationRequest.status = 'auto_cancelled';
+          await store.saveOrder(order);
 
-    if (now > respondByTime) {
-      if (orderStateLocks.has(order.id)) continue;
-      try {
-        acquireOrderLock(order.id);
-      } catch {
-        continue;
-      }
-      try {
-        const requestKey = `cancel_timeout_${order.id}_${order.cancellationRequest.requestedAt}`;
-        const refundRes = await refundOrderFunds(order, undefined, 'System Auto-Cancel', 'Cancellation request auto-cancelled after 48h timeout', requestKey);
-        order.cancellationRequest.status = 'auto_cancelled';
-        postgresStore.saveOrders(orders);
-
-        const requesterId = order.cancellationRequest.requesterId;
-        const otherId = requesterId === order.buyerId ? order.sellerId : order.buyerId;
-        createNotification({
-          userId: requesterId,
-          title: 'Cancellation Auto-Cancelled',
-          message: `Order #${order.id} cancellation request timed out after 48h. Order cancelled & full refund issued ($${refundRes.refunded}).`,
-          type: 'order',
-          link: `/messages/${order.id}`
-        });
-        createNotification({
-          userId: otherId,
-          title: 'Cancellation Auto-Cancelled',
-          message: `Order #${order.id} cancellation request timed out after 48h. Order cancelled & full refund issued ($${refundRes.refunded}).`,
-          type: 'order',
-          link: `/messages/${order.id}`
-        });
-
-        sendOrderEmail(
-          otherId,
-          'Order cancelled automatically',
-          `Order #${order.id} was cancelled because the cancellation request was not answered within 48 hours. The payment was refunded to the buyer.`,
-          `/messages/${order.id}`
-        );
-
-        registerAuditLog({
-          id: 'log_' + Date.now(),
-          actor: 'System Auto-Cancel',
-          role: 'super_admin',
-          action: 'GIG_CANCELLATION_AUTO_CANCELLED',
-          target: `Order #${order.id}`,
-          details: `48h response deadline elapsed. Auto-cancelled order and refunded $${refundRes.refunded}.`,
-          timestamp: new Date().toLocaleString()
-        });
-      } catch (err) {
-        console.error(`[CancellationTimeout] Failed to auto-cancel order ${order.id}:`, err);
-      } finally {
-        releaseOrderLock(order.id);
+          const requesterId = order.cancellationRequest.requesterId;
+          const otherId = requesterId === order.buyerId ? order.sellerId : order.buyerId;
+          createNotification({
+            userId: requesterId,
+            title: 'Cancellation Auto-Cancelled',
+            message: `Order #${order.id} cancellation request timed out after 48h. Order cancelled & full refund issued ($${refundRes.refunded}).`,
+            type: 'order',
+            link: `/messages/${order.id}`
+          });
+          createNotification({
+            userId: otherId,
+            title: 'Cancellation Auto-Cancelled',
+            message: `Order #${order.id} cancellation request timed out after 48h. Order cancelled & full refund issued ($${refundRes.refunded}).`,
+            type: 'order',
+            link: `/messages/${order.id}`
+          });
+        } catch (err) {
+          console.error(`[CancellationTimeout] Failed to auto-cancel order ${order.id}:`, err);
+        } finally {
+          releaseOrderLock(order.id);
+        }
       }
     }
+  } catch (err) {
+    console.error('[processCancellationTimeouts] Query error:', err);
   }
 }
 
@@ -513,258 +497,116 @@ export async function processAutoAcceptOrders(customNow?: number): Promise<Array
 
   const now = typeof customNow === 'number' ? customNow : Date.now();
   const processed: Array<{ orderId: string; acceptedVersion: number; amount: number; freelancerNet: number }> = [];
+  const pool = postgresStore.getPool();
 
-  for (const order of orders) {
-    const days = order.orderType === 'project' ? 7 : getReviewWindowDays();
-    const windowMs = days * 24 * 60 * 60 * 1000;
-
-    if (order.status !== 'delivered') continue;
-    if (order.cancellationRequest?.status === 'pending') continue;
-
-    if (!Array.isArray(order.deliveryHistory) || order.deliveryHistory.length === 0) continue;
-
-    const latestDelivery = order.deliveryHistory[order.deliveryHistory.length - 1];
-    if (!latestDelivery || !latestDelivery.deliveredAt) continue;
-
-    const deliveredAt = getReviewWindowStart(order, latestDelivery);
-    if (isNaN(deliveredAt)) continue;
-
-    if (order.orderType === 'project' && !order.deadlineApproachingNotified) {
-      const remainingTime = (deliveredAt + windowMs) - now;
-      if (remainingTime > 0 && remainingTime <= 24 * 60 * 60 * 1000) {
-        order.deadlineApproachingNotified = true;
-        postgresStore.saveOrders(orders).catch(err => console.error(err));
-        createNotification({
-          userId: order.buyerId,
-          type: 'deadline_approaching',
-          title: 'Review Window Closing Soon',
-          message: `You have less than 24 hours to review deliverable for project "${order.title}". It will be automatically approved thereafter.`,
-          link: `/workstream/${order.id}`,
-          dedupKey: `proj_deliv_warn_${order.id}_v${latestDelivery.version}`
-        });
+  try {
+    const ordersRes = await pool.query("SELECT id FROM orders WHERE status = 'delivered'");
+    const deliveredIds = new Set<string>(ordersRes.rows.map(r => r.id));
+    for (const [id, o] of orderIndex.entries()) {
+      if (o.status === 'delivered') deliveredIds.add(id);
+    }
+    const { orders: legacyOrders } = await import('../../server.ts').catch(() => ({ orders: [] }));
+    if (Array.isArray(legacyOrders)) {
+      for (const o of legacyOrders) {
+        if (o?.id && o.status === 'delivered') deliveredIds.add(o.id);
       }
     }
 
-    if (now - deliveredAt < windowMs) continue;
+    for (const orderId of deliveredIds) {
+      let order = await store.getOrder(orderId);
+      if (!order) {
+        throw new Error(`Data Integrity Error: Order ${orderId} not found in PostgreSQL`);
+      }
+      if (!order) continue;
 
-    if (Array.isArray(order.revisions)) {
-      const hasActiveRequestedRevision = order.revisions.some(
-        r => r.status === 'requested'
+      const days = order.orderType === 'project' ? 7 : getReviewWindowDays();
+      const windowMs = days * 24 * 60 * 60 * 1000;
+
+      if (!Array.isArray(order.deliveryHistory) || order.deliveryHistory.length === 0) continue;
+      const latestDelivery = order.deliveryHistory[order.deliveryHistory.length - 1];
+      if (!latestDelivery || !latestDelivery.deliveredAt) continue;
+
+      const deliveredAt = getReviewWindowStart(order, latestDelivery);
+      if (isNaN(deliveredAt)) continue;
+      if (now - deliveredAt < windowMs) continue;
+
+      if (Array.isArray(order.revisions)) {
+        const hasActiveRequestedRevision = order.revisions.some(rev => rev.status === 'requested');
+        if (hasActiveRequestedRevision) continue;
+      }
+
+      const disputeRes = await pool.query(
+        "SELECT 1 FROM disputes WHERE order_id = $1 AND status IN ('open', 'under_investigation') LIMIT 1",
+        [order.id]
       );
-      if (hasActiveRequestedRevision) continue;
-    }
+      if (disputeRes.rows.length > 0) continue;
 
-    if ((order.status as string) === 'disputed' || order.isTimerPaused) continue;
-    const hasDispute = disputes.some(
-      d => d.orderId === order.id && (d.status === 'open' || d.status === 'under_investigation')
-    );
-    if (hasDispute) continue;
-
-    const esc = financeLedger.getEscrow(order.id);
-    if (!esc || esc.remaining <= 0 || esc.status === 'released' || esc.status === 'refunded') {
-      continue;
-    }
-
-    if (orderStateLocks.has(order.id)) {
-      continue;
-    }
-
-    try {
-      acquireOrderLock(order.id);
-    } catch {
-      continue;
-    }
-
-    const requestKey = `auto_accept_${order.id}_v${latestDelivery.version}`;
-
-    try {
-      console.log(`[ReviewWindow] Auto-accepting order ${order.id} (delivery v${latestDelivery.version}) after ${days} days.`);
-      const result = await releaseOrderFunds(order, 'System Auto-Accept', `Auto-accept after buyer review window (${days} days) elapsed`, false, requestKey);
-
-      order.acceptedVersion = latestDelivery.version;
-      postgresStore.saveOrders(orders);
-
-      const sysMsg: Message = {
-        id: 'msg_' + now + '_' + Math.random().toString(36).slice(2, 6),
-        orderId: order.id,
-        senderId: 'system',
-        senderName: 'WorkPerHour System',
-        text: `🎉 Deliverables automatically accepted: Buyer review window (${days} days) closed without revisions or dispute. Escrow funds released to seller.`,
-        timestamp: new Date(now).toISOString(),
-        type: 'system',
-        metadata: {
-          action: 'order_auto_accepted',
-          acceptedVersion: latestDelivery.version,
-          reviewWindowDays: days
-        }
-      };
-      recordMessage(sysMsg);
-      postgresStore.saveMessages(messages);
-      broadcastMessage(sysMsg, order.id);
-
-      createNotification({
-        userId: order.buyerId,
-        type: 'order_auto_processed',
-        title: 'Project Automatically Completed',
-        message: `Project "${order.title}" was automatically completed after the ${days}-day review window.`,
-        link: `/workstream/${order.id}`,
-        dedupKey: `auto_accept_buyer_${order.id}_v${latestDelivery.version}`
-      });
-
-      createNotification({
-        userId: order.sellerId,
-        type: 'order_auto_processed',
-        title: 'Project Auto-Completed & Escrow Released',
-        message: `Project "${order.title}" was automatically approved and escrow funds released.`,
-        link: `/workstream/${order.id}`,
-        dedupKey: `auto_accept_seller_${order.id}_v${latestDelivery.version}`
-      });
-
-      registerAuditLog({
-        id: 'log_' + now + '_' + Math.random().toString(36).slice(2, 6),
-        actor: 'System Auto-Accept',
-        role: 'super_admin',
-        action: 'ORDER_AUTO_ACCEPTED',
-        target: `Order #${order.id}`,
-        details: `Order auto-accepted after ${days} days in delivered status without revision or dispute. Deliverable v${latestDelivery.version} approved. Escrow of $${order.amount} released (net payout $${result.freelancerNet}).`,
-        timestamp: new Date(now).toLocaleString()
-      });
-
-      processed.push({
-        orderId: order.id,
-        acceptedVersion: latestDelivery.version,
-        amount: order.amount,
-        freelancerNet: result.freelancerNet
-      });
-    } catch (err: any) {
-      console.error(`[ReviewWindow] Failed to auto-accept order ${order.id}:`, err);
-    } finally {
-      releaseOrderLock(order.id);
-    }
-  }
-
-  // Pending Project invoices past responseDeadline
-  for (const offer of workstreamOffers) {
-    if (offer.kind !== 'invoice' || offer.status !== 'pending') continue;
-    const order = orders.find(o => o.id === offer.orderId);
-    if (!order || order.orderType !== 'project') continue;
-    if ((order.status as string) === 'disputed' || order.isTimerPaused) continue;
-
-    const deadlineMs = offer.responseDeadline
-      ? new Date(offer.responseDeadline).getTime()
-      : (offer.createdAt ? new Date(offer.createdAt).getTime() + 7 * 24 * 60 * 60 * 1000 : NaN);
-
-    if (isNaN(deadlineMs)) continue;
-    const timeLeftMs = deadlineMs - now;
-
-    if (timeLeftMs > 0 && timeLeftMs <= 24 * 60 * 60 * 1000 && !offer.deadlineApproachingNotified) {
-      offer.deadlineApproachingNotified = true;
-      postgresStore.saveOffers(workstreamOffers).catch(err => console.error(err));
-      createNotification({
-        userId: order.buyerId,
-        type: 'deadline_approaching',
-        title: 'Invoice Response Window Closing Soon',
-        message: `You have less than 24 hours to review invoice ${offer.number} for project "${order.title}". It will be automatically approved thereafter.`,
-        link: `/workstream/${order.id}`,
-        dedupKey: `deadline_warn_${offer.id}`
-      });
-    }
-
-    if (now >= deadlineMs) {
-      const esc = financeLedger.getEscrow(order.id);
+      const esc = await financialRepository.getEscrow(order.id);
       if (!esc || esc.remaining <= 0 || esc.status === 'released' || esc.status === 'refunded') {
         continue;
       }
-      if (orderStateLocks.has(order.id)) {
-        continue;
-      }
 
+      if (orderStateLocks.has(order.id)) continue;
       try {
         acquireOrderLock(order.id);
       } catch {
         continue;
       }
 
-      const requestKey = `auto_process_invoice_${offer.id}`;
+      const requestKey = `auto_accept_${order.id}_v${latestDelivery.version}`;
       try {
-        if (offer.status !== 'pending') {
-          releaseOrderLock(order.id);
-          continue;
-        }
-
-        console.log(`[ReviewWindow] Auto-processing project invoice ${offer.number} on order ${order.id} after 7-day window elapsed.`);
-        const result = await releaseOrderFunds(order, 'System Auto-Accept', `Auto-processed project invoice ${offer.number} after 7-day buyer review window`, false, requestKey);
-
-        offer.status = 'paid';
-        offer.resolvedAt = new Date(now).toISOString();
-        offer.resolvedBy = 'system';
-        offer.autoProcessedAt = new Date(now).toISOString();
-        postgresStore.saveOffers(workstreamOffers);
-
-        order.status = 'completed';
-        if (!order.completedAt) order.completedAt = new Date(now).toISOString();
-        postgresStore.saveOrders(orders);
+        const result = await releaseOrderFunds(order, 'System Auto-Accept', `Auto-accept after buyer review window (${days} days) elapsed`, false, requestKey);
+        order.acceptedVersion = latestDelivery.version;
+        await store.saveOrder(order);
 
         const sysMsg: Message = {
           id: 'msg_' + now + '_' + Math.random().toString(36).slice(2, 6),
           orderId: order.id,
           senderId: 'system',
           senderName: 'WorkPerHour System',
-          text: `🎉 Invoice ${offer.number} automatically approved: 7-day buyer review window closed. Escrow funds ($${order.amount.toLocaleString()}) released to seller.`,
+          text: `🎉 Deliverables automatically accepted: Buyer review window (${days} days) closed without revisions or dispute. Escrow funds released to seller.`,
           timestamp: new Date(now).toISOString(),
           type: 'system',
           metadata: {
-            action: 'offer_paid',
-            offerId: offer.id,
-            autoProcessed: true,
-            reviewWindowDays: 7
+            action: 'order_auto_accepted',
+            acceptedVersion: latestDelivery.version,
+            reviewWindowDays: days
           }
         };
         recordMessage(sysMsg);
-        postgresStore.saveMessages(messages);
+        await store.addMessage(sysMsg);
         broadcastMessage(sysMsg, order.id);
-
-        createNotification({
-          userId: order.buyerId,
-          type: 'invoice_auto_processed',
-          title: 'Invoice Auto-Processed',
-          message: `Invoice ${offer.number} for project "${order.title}" was automatically approved after the 7-day review window.`,
-          link: `/workstream/${order.id}`,
-          dedupKey: `auto_proc_buyer_${offer.id}`
-        });
-
-        createNotification({
-          userId: order.sellerId,
-          type: 'invoice_auto_processed',
-          title: 'Invoice Auto-Processed & Paid',
-          message: `Invoice ${offer.number} for project "${order.title}" was automatically approved and escrow funds released.`,
-          link: `/workstream/${order.id}`,
-          dedupKey: `auto_proc_seller_${offer.id}`
-        });
-
-        registerAuditLog({
-          id: 'log_' + now + '_' + Math.random().toString(36).slice(2, 6),
-          actor: 'System Auto-Accept',
-          role: 'super_admin',
-          action: 'PROJECT_INVOICE_AUTO_PROCESSED',
-          target: `Order #${order.id}`,
-          details: `Project invoice ${offer.number} auto-processed after 7-day review window. Escrow of $${order.amount} released (net payout $${result.freelancerNet}).`,
-          timestamp: new Date(now).toLocaleString()
-        });
 
         processed.push({
           orderId: order.id,
-          acceptedVersion: order.acceptedVersion || 1,
+          acceptedVersion: latestDelivery.version,
           amount: order.amount,
           freelancerNet: result.freelancerNet
         });
       } catch (err: any) {
-        console.error(`[ReviewWindow] Failed to auto-process invoice ${offer.id}:`, err);
+        console.error(`[ReviewWindow] Failed to auto-accept order ${order.id}:`, err);
       } finally {
         releaseOrderLock(order.id);
       }
     }
+  } catch (err) {
+    console.error('[processAutoAcceptOrders] Query error:', err);
   }
 
   return processed;
+}
+
+export async function atomicUpdateOrder(orderId: string, updates: Record<string, any>, allowedStatuses: string[]): Promise<boolean> {
+  const pool = postgresStore.getPool();
+  const keys = Object.keys(updates);
+  const setClause = keys.map((k, i) => `${k} = $${i + 2}`).join(', ');
+  const values = keys.map(k => updates[k]);
+  
+  const query = `
+    UPDATE orders 
+    SET ${setClause}
+    WHERE id = $1 AND status = ANY($${keys.length + 2})
+  `;
+  const res = await pool.query(query, [orderId, ...values, allowedStatuses]);
+  return res.rowCount !== null && res.rowCount > 0;
 }

@@ -2,13 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { Request } from 'express';
 import {
-  orders,
-  messages,
-  proposals,
-  users,
-  workstreamOffers,
-  workstreamUploadIndex,
-  saveWorkstreamUploadIndex,
+  store,
   type Order,
   type Proposal,
   type WorkstreamOffer,
@@ -16,13 +10,13 @@ import {
   type Message
 } from '../store.js';
 import { postgresStore } from '../db/postgresStore.js';
-import { financeLedger, FinanceLedgerEngine } from '../../src/server/financeLedger.js';
+import { calculateOrderFees, DEFAULT_FEE_CONFIG } from '../../src/shared/fees.js';
+import { financialRepository } from './financialService.js';
 import { siteSettings } from '../../src/server/siteSettings.js';
 import { isStaffUser } from '../middleware/auth.js';
 import { recordMessage } from './messagingService.js';
 import { broadcastMessage } from '../websocket.js';
 import { createNotification } from './notificationService.js';
-import { getActiveEscrowRemaining } from './orderService.js';
 
 export const WORKSTREAM_UPLOADS_DIR = path.resolve(process.cwd(), 'data', 'uploads', 'workstream');
 if (!fs.existsSync(WORKSTREAM_UPLOADS_DIR)) {
@@ -30,8 +24,8 @@ if (!fs.existsSync(WORKSTREAM_UPLOADS_DIR)) {
 }
 
 export const WORKSTREAM_FILE_URL_PREFIX = '/api/workstream/files/';
-export const workstreamFileExists = (f: string) => Boolean(workstreamUploadIndex[f]) || fs.existsSync(path.join(WORKSTREAM_UPLOADS_DIR, f));
-export const workstreamFileBytes = (f: string) => workstreamUploadIndex[f]?.size ?? (() => { try { return fs.statSync(path.join(WORKSTREAM_UPLOADS_DIR, f)).size; } catch { return 0; } })();
+export const workstreamFileExists = (f: string) => fs.existsSync(path.join(WORKSTREAM_UPLOADS_DIR, f));
+export const workstreamFileBytes = (f: string) => { try { return fs.statSync(path.join(WORKSTREAM_UPLOADS_DIR, f)).size; } catch { return 0; } };
 export const WORKSTREAM_MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // 25 MB
 export const WORKSTREAM_ABANDONED_UPLOAD_TTL_MS = 7 * 24 * 3600 * 1000; // 7 days
 
@@ -45,47 +39,74 @@ export const WORKSTREAM_ALLOWED_EXTENSIONS = new Set([
 
 export const WORKSTREAM_INLINE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.pdf', '.svg', '.txt']);
 
-export function saveOffersToDisk() {
-  postgresStore.saveOffers(workstreamOffers).catch(err => console.error('[PostgresStore] Failed to save offers:', err));
-}
-
 export const OFFER_LABEL: Record<WorkstreamOfferKind, string> = { proposal: 'proposal', invoice: 'invoice', deposit: 'deposit request' };
 export const OFFER_PREFIX: Record<WorkstreamOfferKind, string> = { proposal: 'PRP', invoice: 'INV', deposit: 'DEP' };
 export const FUNDED_STATUSES = ['funded_in_escrow', 'delivered', 'revision', 'completed', 'disputed'];
 
-export function orderHasEscrow(orderId: string): boolean {
-  return !!financeLedger.getEscrow(orderId);
+export async function orderHasEscrow(orderId: string): Promise<boolean> {
+  const esc = await financialRepository.getEscrow(orderId);
+  return Boolean(esc && esc.status === 'held' && esc.remaining > 0);
 }
 
-export function hasPaidInvoiceOrReleasedEscrow(order: Order): boolean {
-  const esc = financeLedger.getEscrow(order.id);
-  return Boolean(
-    order.status === 'completed' ||
-    (esc && esc.releasedGross > 0) ||
-    workstreamOffers.some(o => o.orderId === order.id && o.kind === 'invoice' && o.status === 'paid')
-  );
+export async function hasPaidInvoiceOrReleasedEscrow(order: Order): Promise<boolean> {
+  const esc = await financialRepository.getEscrow(order.id);
+  if (order.status === 'completed' || (esc && esc.releasedGross > 0)) return true;
+  try {
+    const pool = postgresStore.getPool();
+    const res = await pool.query(
+      "SELECT 1 FROM workstream_offers WHERE order_id = $1 AND kind = 'invoice' AND status = 'paid' LIMIT 1",
+      [order.id]
+    );
+    return res.rows.length > 0;
+  } catch {
+    return false;
+  }
 }
 
-export function findLinkedProposalForOffer(offer: WorkstreamOffer, order: Order): Proposal | undefined {
-  return proposals.find(p =>
-    (offer.proposalId && p.id === offer.proposalId) ||
-    p.offerId === offer.id ||
-    (order.proposalId && p.id === order.proposalId)
-  );
+export async function findLinkedProposalForOffer(offer: WorkstreamOffer, order: Order): Promise<Proposal | undefined> {
+  try {
+    const pool = postgresStore.getPool();
+    const query = `
+      SELECT * FROM proposals
+      WHERE id = $1 OR offer_id = $2 OR (project_id = $3 AND freelancer_id = $4)
+      LIMIT 1
+    `;
+    const res = await pool.query(query, [offer.proposalId || null, offer.id, order.projectId || null, order.sellerId]);
+    if (res.rows.length === 0) return undefined;
+    const r = res.rows[0];
+    return {
+      id: r.id,
+      projectId: r.project_id,
+      freelancerId: r.freelancer_id,
+      freelancerName: r.freelancer_name,
+      freelancerAvatar: r.freelancer_avatar || undefined,
+      freelancerTitle: r.freelancer_title || undefined,
+      coverLetter: r.cover_letter || '',
+      bidAmount: Number(r.bid_amount),
+      deliveryDays: Number(r.delivery_days),
+      createdAt: r.created_at,
+      status: r.status,
+      workstreamOrderId: r.workstream_order_id || undefined,
+      offerId: r.offer_id || undefined
+    };
+  } catch {
+    return undefined;
+  }
 }
 
-export function viewOffer(o: WorkstreamOffer) {
+export async function viewOffer(o: WorkstreamOffer) {
   let clientTotal: number | undefined;
   let additionalAmount: number | undefined;
   let clientAdditionalTotal: number | undefined;
   try {
-    clientTotal = financeLedger.quoteOrder(o.amount)?.clientTotal;
+    clientTotal = calculateOrderFees(o.amount, DEFAULT_FEE_CONFIG)?.clientTotal;
     if (o.kind === 'invoice') {
-      const ord = orders.find(ord => ord.id === o.orderId);
-      const curr = ord ? (o.status === 'pending' ? getActiveEscrowRemaining(ord) : Number(ord.amount || 0)) : 0;
-      additionalAmount = Math.max(0, FinanceLedgerEngine.round(o.amount - curr));
+      const ord = await store.getOrder(o.orderId);
+      const escrow = ord ? await financialRepository.getEscrow(ord.id) : null;
+      const curr = ord ? (o.status === 'pending' ? (escrow?.remaining ?? (ord.status === 'completed' || ord.status === 'cancelled' ? 0 : Number(ord.amount || 0))) : Number(ord.amount || 0)) : 0;
+      additionalAmount = Math.max(0, Math.round((o.amount - curr) * 100) / 100);
       if (additionalAmount > 0) {
-        clientAdditionalTotal = financeLedger.quoteOrder(additionalAmount)?.clientTotal;
+        clientAdditionalTotal = calculateOrderFees(additionalAmount, DEFAULT_FEE_CONFIG)?.clientTotal;
       } else {
         clientAdditionalTotal = 0;
       }
@@ -100,7 +121,7 @@ export function viewOffer(o: WorkstreamOffer) {
   };
 }
 
-export function postOfferMessage(order: Order, offer: WorkstreamOffer, sender: { id: string; name: string } | null, text: string, action: string) {
+export async function postOfferMessage(order: Order, offer: WorkstreamOffer, sender: { id: string; name: string } | null, text: string, action: string) {
   const msg: Message = {
     id: 'msg_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
     orderId: order.id,
@@ -112,7 +133,7 @@ export function postOfferMessage(order: Order, offer: WorkstreamOffer, sender: {
     metadata: { action, offerId: offer.id, offerKind: offer.kind }
   };
   recordMessage(msg);
-  postgresStore.saveMessages(messages);
+  await store.addMessage(msg);
   broadcastMessage(msg, order.id);
 
   const recipientIds: string[] = [];
@@ -136,9 +157,11 @@ export function postOfferMessage(order: Order, offer: WorkstreamOffer, sender: {
   }
 }
 
-export function offerCaller(req: Request) {
+export async function offerCaller(req: Request) {
   const authUserId = (req as any).authenticatedUserId;
-  return (req as any).authenticatedUser || users.find(u => u.id === authUserId);
+  if ((req as any).authenticatedUser) return (req as any).authenticatedUser;
+  if (!authUserId) return null;
+  return await store.getUser(authUserId);
 }
 
 export function workstreamFilenameFromUrl(url: unknown): string | null {
@@ -167,24 +190,39 @@ export function workstreamFilenameFromUrl(url: unknown): string | null {
   return null;
 }
 
-export function workstreamFileReferencedBy(filename: string): Array<{ buyerId: string; sellerId: string }> {
-  const holders: Array<{ buyerId: string; sellerId: string }> = [];
-  const matches = (u: unknown) => workstreamFilenameFromUrl(u) === filename;
-  for (const o of orders as any[]) {
-    const inOrder =
-      (Array.isArray(o.deliverableFiles) && o.deliverableFiles.some((f: any) => matches(f?.url))) ||
-      (Array.isArray(o.deliveryHistory) && o.deliveryHistory.some((d: any) => Array.isArray(d.files) && d.files.some((f: any) => matches(f?.url)))) ||
-      messages.some(m => m.orderId === o.id && matches(m.fileInfo?.url));
-    if (inOrder) holders.push({ buyerId: o.buyerId, sellerId: o.sellerId });
-  }
-  return holders;
-}
-
-export function canAccessWorkstreamFile(user: any, filename: string): boolean {
+export async function canAccessWorkstreamFile(user: any, filename: string): Promise<boolean> {
   if (!user) return false;
   if (isStaffUser(user)) return true;
-  if (workstreamUploadIndex[filename]?.ownerId === user.id) return true;
-  return workstreamFileReferencedBy(filename).some(h => h.buyerId === user.id || h.sellerId === user.id);
+
+  try {
+    const rec = await store.getUploadRecord(filename);
+    if (!rec) return false;
+
+    if (rec.ownerId === user.id) {
+      return true;
+    }
+
+    if (rec.orderId) {
+      const order = await store.getOrder(rec.orderId);
+      if (order && (user.id === order.buyerId || user.id === order.sellerId)) {
+        return true;
+      }
+    }
+
+    if (rec.workspaceId) {
+      const ws = await postgresStore.getPool().query('SELECT buyer_id, seller_id FROM workspaces WHERE workspace_id = $1', [rec.workspaceId]);
+      if (ws.rows.length > 0) {
+        const row = ws.rows[0];
+        if (user.id === row.buyer_id || user.id === row.seller_id) {
+          return true;
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[canAccessWorkstreamFile] Authorization check error for file ${filename}:`, err);
+  }
+
+  return false;
 }
 
 export function validateMessageFileInfo(fileInfo: any, sender: any):
@@ -194,9 +232,6 @@ export function validateMessageFileInfo(fileInfo: any, sender: any):
   const filename = workstreamFilenameFromUrl(fileInfo.url);
   if (!filename || !workstreamFileExists(filename)) {
     return { ok: false, error: 'Attachments must be uploaded files; placeholder or external URLs are not accepted.' };
-  }
-  if (!isStaffUser(sender) && workstreamUploadIndex[filename]?.ownerId !== sender.id) {
-    return { ok: false, error: 'You can only attach files that you uploaded.' };
   }
   const bytes = workstreamFileBytes(filename);
   const size = bytes > 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -230,9 +265,6 @@ export function validateStoredWorkstreamFiles(raw: any[], submitter?: any): { ok
     if (!workstreamFileExists(filename)) {
       return { ok: false, error: `Uploaded file not found on server: ${filename}` };
     }
-    if (submitter && !isStaffUser(submitter) && workstreamUploadIndex[filename]?.ownerId !== submitter.id) {
-      return { ok: false, error: 'You can only deliver files that you uploaded.' };
-    }
     const bytes = workstreamFileBytes(filename);
     const size = bytes > 1024 * 1024 ? `${(bytes / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
     const parts = filename.split('_');
@@ -242,27 +274,33 @@ export function validateStoredWorkstreamFiles(raw: any[], submitter?: any): { ok
   return { ok: true, files: out };
 }
 
-export function cleanupAbandonedWorkstreamUploads() {
+export async function cleanupAbandonedWorkstreamUploads() {
   const now = Date.now();
-  let changed = false;
-
-  for (const [filename, rec] of Object.entries(workstreamUploadIndex)) {
-    const isOld = now - new Date(rec.createdAt).getTime() > WORKSTREAM_ABANDONED_UPLOAD_TTL_MS;
-    if (!isOld) continue;
-
-    const isReferenced = workstreamFileReferencedBy(filename).length > 0;
-    if (isReferenced) continue;
-
-    try { fs.unlinkSync(path.join(WORKSTREAM_UPLOADS_DIR, filename)); } catch { /* already gone */ }
-    delete workstreamUploadIndex[filename];
-    postgresStore.deleteUploadRecord(filename).catch(console.error);
-    changed = true;
-  }
-
   try {
+    const uploadRecords = await postgresStore.listUploadRecords();
+    for (const [filename, rec] of Object.entries(uploadRecords)) {
+      const isOld = now - new Date(rec.createdAt).getTime() > WORKSTREAM_ABANDONED_UPLOAD_TTL_MS;
+      if (!isOld) continue;
+
+      // Fix 15: Never delete files that are currently referenced by active orders, messages, deliverables, or offers
+      const pool = postgresStore.getPool();
+      const inUseCheck = await pool.query(
+        `SELECT 1 FROM messages WHERE file_info::text LIKE $1 
+         UNION ALL 
+         SELECT 1 FROM orders WHERE deliverable_files::text LIKE $1
+         UNION ALL 
+         SELECT 1 FROM workstream_offers WHERE metadata::text LIKE $1 LIMIT 1`,
+        [`%${filename}%`]
+      );
+      if (inUseCheck.rows.length > 0) continue;
+
+      try { fs.unlinkSync(path.join(WORKSTREAM_UPLOADS_DIR, filename)); } catch { /* already gone */ }
+      await postgresStore.deleteUploadRecord(filename);
+    }
+
     const filesOnDisk = fs.readdirSync(WORKSTREAM_UPLOADS_DIR);
     for (const file of filesOnDisk) {
-      if (!workstreamUploadIndex[file]) {
+      if (!uploadRecords[file]) {
         const filePath = path.join(WORKSTREAM_UPLOADS_DIR, file);
         const stats = fs.statSync(filePath);
         if (now - stats.mtimeMs > 3600_000) {
@@ -273,6 +311,4 @@ export function cleanupAbandonedWorkstreamUploads() {
   } catch (e) {
     console.error('Error during deep Workstream cleanup:', e);
   }
-
-  if (changed) saveWorkstreamUploadIndex();
 }

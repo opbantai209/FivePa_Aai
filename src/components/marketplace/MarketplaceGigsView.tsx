@@ -15,6 +15,8 @@ import {
   DollarSign
 } from 'lucide-react';
 import { Gig, Project } from '../../types';
+import { DEFAULT_AVATAR, DEFAULT_GIG_IMAGE } from '../../constants';
+import { Avatar, GigImage } from '../../components/ui';
 
 interface MarketplaceGigsViewProps {
   filteredGigs: Gig[];
@@ -298,14 +300,11 @@ export const MarketplaceGigsView: React.FC<MarketplaceGigsViewProps> = ({
               className="bg-white rounded-2xl border border-slate-200 overflow-hidden hover:shadow-xl transition-all duration-300 flex flex-col group cursor-pointer"
             >
               <div className="relative aspect-video overflow-hidden bg-slate-100">
-                <img 
+                <GigImage 
                   src={gig.image} 
-                  alt={gig.title} 
-                  referrerPolicy="no-referrer"
-                  onError={(e) => {
-                    (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=800&h=500&fit=crop';
-                  }}
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" 
+                  title={gig.title} 
+                  category={gig.category}
+                  className="w-full h-full group-hover:scale-105 transition-transform duration-500" 
                 />
                 <button 
                   onClick={(e) => handleToggleLike(gig.id, e)}
@@ -329,7 +328,11 @@ export const MarketplaceGigsView: React.FC<MarketplaceGigsViewProps> = ({
                     }}
                     className="flex items-center gap-2.5 mb-2.5 group/seller"
                   >
-                    <img src={gig.freelancerAvatar} alt={gig.freelancerName} className="w-8 h-8 rounded-full object-cover" />
+                    <Avatar 
+                      src={gig.freelancerAvatar} 
+                      name={gig.freelancerName} 
+                      size="sm"
+                    />
                     <div>
                       <div className="flex items-center gap-1.5">
                         <span className="text-sm font-bold text-fiverr-dark group-hover/seller:underline">{gig.freelancerName}</span>
@@ -380,7 +383,12 @@ export const MarketplaceGigsView: React.FC<MarketplaceGigsViewProps> = ({
             >
               <div className="flex items-center gap-5 w-full md:w-auto">
                 <div className="relative w-44 h-32 rounded-xl overflow-hidden bg-slate-100 shrink-0">
-                  <img src={gig.image} alt={gig.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                  <GigImage 
+                    src={gig.image} 
+                    title={gig.title} 
+                    category={gig.category}
+                    className="w-full h-full group-hover:scale-105 transition-transform duration-500" 
+                  />
                   <button 
                     onClick={(e) => handleToggleLike(gig.id, e)}
                     className={`absolute top-2.5 right-2.5 w-7 h-7 rounded-full bg-white/90 flex items-center justify-center transition-all shadow-sm ${likedGigIds.includes(gig.id) ? 'text-red-500 bg-white' : 'text-fiverr-dark hover:text-red-500'}`}
@@ -416,7 +424,11 @@ export const MarketplaceGigsView: React.FC<MarketplaceGigsViewProps> = ({
                     }}
                     className="flex items-center gap-2 text-xs text-fiverr-muted hover:underline"
                   >
-                    <img src={gig.freelancerAvatar} className="w-5 h-5 rounded-full object-cover" />
+                    <Avatar 
+                      src={gig.freelancerAvatar} 
+                      name={gig.freelancerName} 
+                      size="xs"
+                    />
                     <span>by <strong className="text-fiverr-dark">{gig.freelancerName}</strong> ({gig.freelancerLevel || 'Top Rated'})</span>
                   </a>
                 </div>
@@ -478,9 +490,12 @@ export const MarketplaceGigsView: React.FC<MarketplaceGigsViewProps> = ({
                   <div className="flex flex-wrap items-center gap-2.5 text-xs">
                     <div className="flex items-center gap-2">
                       <img 
-                        src={project.buyerAvatar} 
+                        src={project.buyerAvatar || DEFAULT_AVATAR} 
                         alt={project.buyerName} 
                         className="w-6 h-6 rounded-full object-cover shrink-0 ring-1 ring-slate-200" 
+                        onError={(e) => {
+                          (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
+                        }}
                       />
                       <span className="font-bold text-fiverr-dark text-xs">{project.buyerName}</span>
                       <span className="text-[11px] text-slate-400 font-medium">

@@ -26,6 +26,8 @@ import {
 } from 'lucide-react';
 import { UserAccount, Gig } from '../../types';
 import { PPH_CATEGORIES } from '../HeaderCategoriesNav';
+import { getGigUrl } from '../../utils/slugify';
+import { DEFAULT_AVATAR, DEFAULT_GIG_IMAGE } from '../../constants';
 
 interface FreelancerSearchViewProps {
   usersList: UserAccount[];
@@ -476,19 +478,29 @@ export const FreelancerSearchView: React.FC<FreelancerSearchViewProps> = ({
               {topTrendingOffers.map(gig => (
                 <div 
                   key={gig.id}
-                  onClick={() => navigate(`/gig/${gig.slug || gig.id}`)}
+                  onClick={() => navigate(getGigUrl(gig))}
                   className="min-w-[260px] max-w-[280px] bg-slate-50 rounded-xl border border-slate-200 p-3 hover:border-emerald-500 hover:shadow-md transition-all cursor-pointer flex flex-col justify-between shrink-0"
                 >
                   <div className="space-y-2">
                     <div className="relative aspect-video rounded-lg overflow-hidden bg-slate-200">
-                      <img src={gig.image} alt={gig.title} className="w-full h-full object-cover" />
+                      <img 
+                        src={gig.image || DEFAULT_GIG_IMAGE} 
+                        alt={gig.title} 
+                        className="w-full h-full object-cover" 
+                        onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE; }}
+                      />
                       <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-slate-900/90 text-emerald-400 font-extrabold text-[11px] shadow-sm">
                         ${gig.price}
                       </div>
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <img src={gig.freelancerAvatar} alt={gig.freelancerName} className="w-6 h-6 rounded-full object-cover ring-1 ring-slate-300" />
+                      <img 
+                        src={gig.freelancerAvatar || DEFAULT_AVATAR} 
+                        alt={gig.freelancerName} 
+                        className="w-6 h-6 rounded-full object-cover ring-1 ring-slate-300" 
+                        onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
+                      />
                       <span className="text-xs font-bold text-slate-800 truncate">{gig.freelancerName}</span>
                     </div>
 
@@ -875,9 +887,10 @@ export const FreelancerSearchView: React.FC<FreelancerSearchViewProps> = ({
                           <div className="flex items-center gap-3.5">
                             <div className="relative shrink-0">
                               <img 
-                                src={user.avatar} 
+                                src={user.avatar || DEFAULT_AVATAR} 
                                 alt={user.name} 
                                 className="w-14 h-14 rounded-full object-cover ring-2 ring-slate-100 shadow-xs" 
+                                onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                               />
                               {user.isAvailableNow && (
                                 <span className="absolute bottom-0 right-0 w-4 h-4 bg-emerald-500 border-2 border-white rounded-full" title="Available Now"></span>
@@ -976,10 +989,15 @@ export const FreelancerSearchView: React.FC<FreelancerSearchViewProps> = ({
                               Popular Offer
                             </span>
                             <div 
-                              onClick={() => navigate(`/gig/${userGigs[0].slug || userGigs[0].id}`)}
+                              onClick={() => navigate(getGigUrl(userGigs[0]))}
                               className="flex items-center gap-2 p-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 transition-colors cursor-pointer border border-slate-100"
                             >
-                              <img src={userGigs[0].image} alt="" className="w-8 h-8 rounded object-cover shrink-0" />
+                              <img 
+                                src={userGigs[0].image || DEFAULT_GIG_IMAGE} 
+                                alt="" 
+                                className="w-8 h-8 rounded object-cover shrink-0" 
+                                onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE; }}
+                              />
                               <span className="text-[11px] font-bold text-slate-800 truncate flex-1">{userGigs[0].title}</span>
                               <span className="text-[11px] font-extrabold text-emerald-600 shrink-0">${userGigs[0].price}</span>
                             </div>
@@ -1014,9 +1032,10 @@ export const FreelancerSearchView: React.FC<FreelancerSearchViewProps> = ({
                         <div className="flex items-start gap-4 flex-1">
                           <div className="relative shrink-0">
                             <img 
-                              src={user.avatar} 
+                              src={user.avatar || DEFAULT_AVATAR} 
                               alt={user.name} 
                               className="w-16 h-16 rounded-full object-cover ring-2 ring-slate-100 shadow-xs" 
+                              onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                             />
                             {user.isAvailableNow && (
                               <span className="absolute bottom-0 right-0 w-4 h-4 bg-emerald-500 border-2 border-white rounded-full" title="Available Now"></span>

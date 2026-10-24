@@ -1,14 +1,14 @@
 import {
-  messages,
-  orders,
+  store,
   type Message,
   type Order,
   type User
 } from '../store.js';
-import { postgresStore } from '../db/postgresStore.js';
+import { postgresStore, isPostgresEnabled } from '../db/postgresStore.js';
 import { broadcastMessage } from '../websocket.js';
 import { notifyOrderParties } from './notificationService.js';
 import { isStaffUser } from '../middleware/auth.js';
+import { diagnosticService } from './diagnosticService.js';
 
 export const messageIndex = new Map<string, Message[]>();
 
@@ -25,10 +25,10 @@ export function registerMessage(m: Message) {
 }
 
 export function recordMessage(m: Message) {
-  if (!m.id || !messages.some(existing => existing.id === m.id)) {
-    messages.push(m);
-  }
   registerMessage(m);
+  store.addMessage(m).catch(err => {
+    console.error('[messagingService] Error saving message to database:', err);
+  });
 }
 
 export function sanitizeAndCreateMessage(
@@ -127,7 +127,9 @@ export function emitSystemEvent(orderId: string, action: string, text: string, m
     metadata: { ...metadata, action }
   };
   recordMessage(sysMsg);
-  postgresStore.saveMessages(messages);
+  store.addMessage(sysMsg).catch(err => {
+    console.error('[messagingService] Error persisting system message:', err);
+  });
   broadcastMessage(sysMsg, orderId);
   notifyOrderParties(orderId, action, text, sysMsg.id);
 }

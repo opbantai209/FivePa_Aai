@@ -15,8 +15,8 @@ export interface WebsiteSettings {
 
 export interface PlatformCommissionSettings {
   commissionPercent: number; // platform cut of the gig price; freelancer keeps the rest (default 20)
-  buyerProcessingFeePercent: number; // client service fee on top of the gig price (default 5.5)
-  smallOrderFeeAmount: number; // flat fee added when the gig price is under the threshold (default 3.50)
+  buyerProcessingFeePercent: number; // client service fee on top of the gig price (default 1.0)
+  smallOrderFeeAmount: number; // flat fee added when the gig price is under the threshold (default 1.00)
   smallOrderFeeThreshold: number; // gig price below this triggers the small-order fee (default 200)
   refundClientFeesOnFullRefund: boolean; // return service + small-order fee when an order is fully refunded
   minimumOrderAmount: number; // e.g. 5.00
@@ -144,9 +144,9 @@ export const DEFAULT_SITE_SETTINGS: SiteSettingsState = {
   },
   commission: {
     commissionPercent: DEFAULT_FEE_CONFIG.commissionPercent, // 20% platform take rate
-    buyerProcessingFeePercent: DEFAULT_FEE_CONFIG.buyerFeePercent, // 5.5% client service fee
-    smallOrderFeeAmount: DEFAULT_FEE_CONFIG.smallOrderFee, // $3.50 flat fee...
-    smallOrderFeeThreshold: DEFAULT_FEE_CONFIG.smallOrderThreshold, // ...on orders under $200
+    buyerProcessingFeePercent: DEFAULT_FEE_CONFIG.buyerFeePercent, // 1% client service fee
+    smallOrderFeeAmount: DEFAULT_FEE_CONFIG.smallOrderFee, // $1.00 flat fee...
+    smallOrderFeeThreshold: DEFAULT_FEE_CONFIG.smallOrderThreshold, // ...on orders strictly under $200
     refundClientFeesOnFullRefund: true,
     minimumOrderAmount: 5.0,
     escrowProtectionDays: 14, // 14-day mandatory vault

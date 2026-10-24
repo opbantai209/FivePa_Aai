@@ -6,6 +6,7 @@ import {
   PlusCircle, Download, CheckSquare, Square, ChevronDown
 } from 'lucide-react';
 import { Gig, UserAccount } from '../../types';
+import { DEFAULT_AVATAR, DEFAULT_GIG_IMAGE } from '../../constants';
 
 interface AdminGigsModuleProps {
   allGigs?: Gig[];
@@ -554,9 +555,10 @@ export const AdminGigsModule: React.FC<AdminGigsModuleProps> = ({
                       <td className="py-3.5 px-4 max-w-xs">
                         <div className="flex items-center gap-3">
                           <img
-                            src={g.image || 'https://images.unsplash.com/photo-1555066931-4365d14bab8c?w=100&h=100&fit=crop'}
+                            src={g.image || DEFAULT_GIG_IMAGE}
                             alt=""
                             className="w-10 h-10 rounded-xl object-cover border border-slate-200 shrink-0"
+                            onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE; }}
                           />
                           <div className="min-w-0">
                             <div className="font-bold text-slate-900 group-hover:text-emerald-600 transition line-clamp-1">
@@ -571,9 +573,10 @@ export const AdminGigsModule: React.FC<AdminGigsModuleProps> = ({
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-2">
                           <img
-                            src={g.freelancerAvatar || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&h=100&fit=crop'}
+                            src={g.freelancerAvatar || DEFAULT_AVATAR}
                             alt={g.freelancerName}
                             className="w-7 h-7 rounded-full object-cover border border-slate-200 shrink-0"
+                            onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                           />
                           <div>
                             <div className="font-bold text-slate-900 leading-tight">{g.freelancerName}</div>
@@ -770,7 +773,11 @@ export const AdminGigsModule: React.FC<AdminGigsModuleProps> = ({
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <img src={inspectingGig.image} className="w-full h-52 rounded-2xl object-cover border border-slate-200" />
+              <img 
+                src={inspectingGig.image || DEFAULT_GIG_IMAGE} 
+                className="w-full h-52 rounded-2xl object-cover border border-slate-200" 
+                onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE; }}
+              />
               <div className="space-y-3 text-xs">
                 <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
                   <span className="text-[10px] text-slate-400 font-bold block uppercase">Seller Information</span>

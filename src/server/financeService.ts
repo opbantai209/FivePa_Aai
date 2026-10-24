@@ -5,7 +5,14 @@ import { financeLedger, FinanceLedgerEngine, EscrowRecord, UserWallet, LedgerJou
  * Acts as the single entry point for all financial operations, escrows, wallet movements, and ledger postings.
  */
 class FinanceService {
+  private assertProduction() {
+    if (process.env.NODE_ENV === 'production' || process.env.POSTGRES_URL) {
+      throw new Error('Legacy financeService is disabled in production. PostgreSQL is the authoritative financial store.');
+    }
+  }
+
   public ensureWallet(params: { userId: string; name: string; email: string; role: 'buyer' | 'freelancer' }): void {
+    this.assertProduction();
     financeLedger.ensureWallet(params);
   }
 

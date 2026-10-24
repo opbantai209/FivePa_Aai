@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { WorkstreamItem } from './types';
 import { UserAccount } from '../../types';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface WorkstreamSummaryCardProps {
   order: WorkstreamItem;
@@ -90,9 +91,10 @@ export const WorkstreamSummaryCard: React.FC<WorkstreamSummaryCardProps> = ({
             <div className="flex items-center gap-3">
               <div className="relative">
                 <img
-                  src={partner.avatar}
+                  src={partner.avatar || DEFAULT_AVATAR}
                   alt={partner.name}
                   className="w-12 h-12 rounded-2xl object-cover border-2 border-white shadow-2xs"
+                  onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                 />
                 {partner.kycStatus === 'verified' && (
                   <div className="absolute -bottom-1 -right-1 bg-emerald-600 text-white p-0.5 rounded-full border-2 border-white shadow-2xs" title="Verified User">

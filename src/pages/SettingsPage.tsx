@@ -110,10 +110,28 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
     }
   };
 
-  const handleSaveField = (field: string) => {
+  const handleSaveField = async (field: string) => {
     setEditingField(null);
     if (field === 'email' && currentUser) {
-      updateCurrentUser({ ...currentUser, email });
+      try {
+        const res = await fetchWithRetry('/api/users/email', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.user) updateCurrentUser(data.user);
+          showToast('Email address updated successfully!');
+        } else {
+          const errData = await res.json().catch(() => ({}));
+          showToast(errData.error || 'Failed to update email address.');
+        }
+      } catch (err) {
+        console.error('Failed to update email:', err);
+        showToast('Network error updating email address.');
+      }
+      return;
     }
     showToast(`Successfully updated ${field.replace(/_/g, ' ')}!`);
   };
@@ -634,10 +652,23 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 {/* Interactive Slider Switch */}
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     const isNowAvailable = !(currentUser?.isAvailableNow || availableStatus === 'Active');
                     setAvailableStatus(isNowAvailable ? 'Active' : 'Inactive');
                     if (currentUser) updateCurrentUser({ ...currentUser, isAvailableNow: isNowAvailable });
+                    try {
+                      const res = await fetchWithRetry('/api/users/availability', {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ isAvailableNow: isNowAvailable })
+                      });
+                      if (res.ok) {
+                        const data = await res.json();
+                        if (data.user) updateCurrentUser(data.user);
+                      }
+                    } catch (err) {
+                      console.error('Failed to toggle availability:', err);
+                    }
                     showToast(isNowAvailable ? 'You are now marked as Available Now!' : 'Availability turned off');
                   }}
                   className={`relative inline-flex h-8 w-16 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${

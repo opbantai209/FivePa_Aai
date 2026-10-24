@@ -5,6 +5,7 @@ import {
   TrendingUp, DollarSign, Ban, Award, FileText, User, Tag, ChevronDown, Trash2
 } from 'lucide-react';
 import { Project } from '../../types';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface AdminProjectsModuleProps {
   allProjects?: Project[];
@@ -349,9 +350,10 @@ export const AdminProjectsModule: React.FC<AdminProjectsModuleProps> = ({
                       <td className="py-4 px-4">
                         <div className="flex items-center gap-3">
                           <img
-                            src={project.buyerAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&h=100&fit=crop'}
+                            src={project.buyerAvatar || DEFAULT_AVATAR}
                             alt={project.buyerName}
                             className="w-8 h-8 rounded-full object-cover border border-slate-200"
+                            onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                           />
                           <div>
                             <div className="font-semibold text-slate-900 text-xs flex items-center gap-1">
@@ -531,9 +533,10 @@ export const AdminProjectsModule: React.FC<AdminProjectsModuleProps> = ({
             <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between">
               <div className="flex items-center gap-3">
                 <img
-                  src={inspectingProject.buyerAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&h=100&fit=crop'}
+                  src={inspectingProject.buyerAvatar || DEFAULT_AVATAR}
                   alt={inspectingProject.buyerName}
                   className="w-12 h-12 rounded-full object-cover border border-slate-200"
+                  onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                 />
                 <div>
                   <h4 className="font-bold text-slate-900 text-sm flex items-center gap-1">

@@ -1,6 +1,7 @@
 import React from 'react';
 import { Gig } from '../../types';
 import { ChevronDown, Trash2 } from 'lucide-react';
+import { DEFAULT_GIG_IMAGE } from '../../constants';
 
 interface UserFreelanceOffersListProps {
   gigs: Gig[];
@@ -46,7 +47,12 @@ export const UserFreelanceOffersList: React.FC<UserFreelanceOffersListProps> = (
           <div key={gig.id} className="p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6 hover:bg-slate-50/70 transition-colors">
             <div className="flex items-start sm:items-center gap-5">
               <div className="relative w-32 h-24 rounded-2xl overflow-hidden bg-slate-100 border border-slate-200 shrink-0">
-                <img src={gig.image} alt={gig.title} className="w-full h-full object-cover" />
+                <img 
+                  src={gig.image || DEFAULT_GIG_IMAGE} 
+                  alt={gig.title} 
+                  className="w-full h-full object-cover" 
+                  onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE; }}
+                />
                 <span className={`absolute top-2 left-2 px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
                   gig.status === 'published' ? 'bg-emerald-600 text-white' : 'bg-slate-900/80 text-white'
                 }`}>

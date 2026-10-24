@@ -2,6 +2,7 @@ import React from 'react';
 import { ShieldCheck, AlertCircle, RefreshCw, Sparkles, CheckCircle2 } from 'lucide-react';
 import { UserAccount } from '../../types';
 import { setAuthToken, requestDemoSession } from '../../utils/authToken';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface LoginModalProps {
   isOpen: boolean;
@@ -239,7 +240,12 @@ export const LoginModal: React.FC<LoginModalProps> = ({
                   }}
                   className="p-2 border border-slate-200 hover:border-emerald-500 hover:bg-emerald-50/50 rounded-xl text-left transition-all cursor-pointer group flex items-center gap-2"
                 >
-                  <img src={u.avatar} alt={u.name} className="w-6 h-6 rounded-full object-cover shrink-0" />
+                  <img 
+                    src={u.avatar || DEFAULT_AVATAR} 
+                    alt={u.name} 
+                    className="w-6 h-6 rounded-full object-cover shrink-0" 
+                    onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
+                  />
                   <div className="min-w-0">
                     <p className="font-bold text-slate-800 truncate group-hover:text-emerald-700">{u.name}</p>
                     <p className="text-[10px] text-slate-400 capitalize">{(u.role || 'freelancer').replace('_', ' ')}</p>

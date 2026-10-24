@@ -32,6 +32,7 @@ import { Project, User as UserType, Proposal, Order, ProjectClarification } from
 import { calculateOrderFees } from '../../shared/fees';
 import { getAuthToken } from '../../utils/authToken';
 import { fetchWithRetry } from '../../utils/fetchRetry';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface ProjectDetailViewProps {
   project: Project;
@@ -222,7 +223,7 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
       projectId: project.id,
       freelancerId: currentUser?.id || 'user_1',
       freelancerName: currentUser?.name || 'You',
-      freelancerAvatar: currentUser?.avatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150',
+      freelancerAvatar: currentUser?.avatar || DEFAULT_AVATAR,
       freelancerTitle: currentUser?.title || 'Senior Freelance Specialist',
       coverLetter: proposalCover,
       bidAmount: numericBid,
@@ -623,9 +624,10 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                       {/* Question */}
                       <div className="flex items-start gap-3">
                         <img 
-                          src={item.userAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150'} 
+                          src={item.userAvatar || DEFAULT_AVATAR} 
                           alt={item.userName} 
                           className="w-8 h-8 rounded-full object-cover shrink-0 mt-0.5 border border-slate-200"
+                          onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center justify-between mb-1">
@@ -812,9 +814,10 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
                           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                             <div className="flex items-center gap-3">
                               <img
-                                src={prop.freelancerAvatar || 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150'}
+                                src={prop.freelancerAvatar || DEFAULT_AVATAR}
                                 alt={prop.freelancerName}
                                 className="w-11 h-11 rounded-full object-cover border border-slate-200 shrink-0"
+                                onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                               />
                               <div>
                                 <div className="flex items-center gap-2 flex-wrap">
@@ -1152,9 +1155,10 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
               <div className="flex items-center gap-3.5">
                 <div className="relative">
                   <img
-                    src={project.buyerAvatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=150'}
+                    src={project.buyerAvatar || DEFAULT_AVATAR}
                     alt={project.buyerName}
                     className="w-14 h-14 rounded-full object-cover border-2 border-slate-100 shadow-xs"
+                    onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                   />
                   <span className="absolute -bottom-1 -right-1 bg-white rounded-full p-0.5 text-xs shadow-xs" title="Country Flag">
                     {project.countryFlag || '🇬🇧'}
@@ -1365,9 +1369,10 @@ export const ProjectDetailView: React.FC<ProjectDetailViewProps> = ({
 
             <div className="flex items-center gap-3 pb-4 border-b border-slate-100">
               <img
-                src={project.buyerAvatar || 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=crop&q=80&w=150'}
+                src={project.buyerAvatar || DEFAULT_AVATAR}
                 alt={project.buyerName}
                 className="w-12 h-12 rounded-full object-cover border border-slate-200"
+                onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
               />
               <div>
                 <h3 className="text-base font-bold text-slate-900">Send Message to {project.buyerName}</h3>

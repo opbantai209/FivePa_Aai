@@ -1,6 +1,6 @@
 {
-  "name": "Work_Per_Hour_Aai",
-  "description": "A feature-rich PeoplePerHour clone with gig marketplace, custom project proposals, escrow payments, real-time messaging, and buyer/seller dashboards.",
+  "name": "FivePA Freelance Marketplace",
+  "description": "Enterprise-grade freelance services and project collaboration platform with secure escrow payments.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

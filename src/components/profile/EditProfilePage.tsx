@@ -7,6 +7,8 @@ import {
   Eye, ArrowLeft, Globe, Award, Image as ImageIcon,
   Briefcase, Save, Sparkles, X, Upload
 } from 'lucide-react';
+import { fetchWithRetry } from '../../utils/fetchRetry';
+import { DEFAULT_AVATAR, DEFAULT_GIG_IMAGE, DEFAULT_PROJECT_IMAGE } from '../../constants';
 
 interface PortfolioItem {
   id: string;
@@ -198,7 +200,7 @@ export const EditProfilePage: React.FC<EditProfilePageProps> = ({
   };
 
   // Save all profile changes
-  const handleSaveAll = (e?: React.FormEvent) => {
+  const handleSaveAll = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const updatedUser: UserAccount = {
       ...user,
@@ -212,7 +214,35 @@ export const EditProfilePage: React.FC<EditProfilePageProps> = ({
     };
 
     updateCurrentUser(updatedUser);
-    showToastMsg('Your profile has been saved successfully!');
+
+    try {
+      const res = await fetchWithRetry('/api/users/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          title,
+          hourlyRate,
+          bio,
+          avatar: avatarUrl,
+          skills,
+          isAvailableNow
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.user) {
+          updateCurrentUser(data.user);
+        }
+        showToastMsg('Your profile has been saved successfully!');
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        showToastMsg(errData.error || 'Failed to save profile changes to database.');
+      }
+    } catch (err) {
+      console.error('Failed to persist profile:', err);
+      showToastMsg('Saved locally, but network error persisting to server.');
+    }
   };
 
   // View public profile
@@ -297,9 +327,10 @@ export const EditProfilePage: React.FC<EditProfilePageProps> = ({
             {/* Cover Banner */}
             <div className="relative h-44 w-full bg-slate-800">
               <img 
-                src={coverUrl} 
+                src={coverUrl || DEFAULT_PROJECT_IMAGE} 
                 alt="Profile Banner" 
                 className="w-full h-full object-cover"
+                onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_PROJECT_IMAGE; }}
               />
               <div className="absolute inset-0 bg-black/20" />
               <label 
@@ -327,9 +358,10 @@ export const EditProfilePage: React.FC<EditProfilePageProps> = ({
               <div className="flex items-end gap-4">
                 <div className="relative inline-block group">
                   <img 
-                    src={avatarUrl} 
+                    src={avatarUrl || DEFAULT_AVATAR} 
                     alt={name} 
                     className="w-24 h-24 rounded-full object-cover border-4 border-white shadow-md ring-2 ring-slate-200 bg-slate-100"
+                    onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_AVATAR; }}
                   />
                   <label 
                     className="absolute bottom-0 right-0 p-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-full cursor-pointer shadow-md transition border-2 border-white"
@@ -587,9 +619,10 @@ export const EditProfilePage: React.FC<EditProfilePageProps> = ({
                   >
                     <div className="relative h-32 rounded-lg overflow-hidden bg-slate-200 border border-slate-200/60">
                       <img 
-                        src={item.image} 
+                        src={item.image || DEFAULT_GIG_IMAGE} 
                         alt={item.title} 
                         className="w-full h-full object-cover"
+                        onError={(e) => { (e.target as HTMLImageElement).src = DEFAULT_GIG_IMAGE; }}
                       />
                       <button 
                         type="button"

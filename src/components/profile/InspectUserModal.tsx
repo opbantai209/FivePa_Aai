@@ -35,7 +35,12 @@ export const InspectUserModal: React.FC<InspectUserModalProps> = ({
         {/* Header */}
         <div className="flex items-start justify-between pb-4 border-b border-slate-100">
           <div className="flex items-center gap-4">
-            <img src={inspectingUser.avatar} className="w-14 h-14 rounded-full object-cover ring-2 ring-emerald-500/30" alt={inspectingUser.name} />
+            <img 
+              src={inspectingUser.avatar} 
+              className="w-14 h-14 rounded-full object-cover ring-2 ring-emerald-500/30" 
+              alt={inspectingUser.name} 
+              onError={(e) => { (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?auto=format&fit=crop&q=80&w=150'; }}
+            />
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-xl font-bold text-slate-900">{inspectingUser.name}</h3>

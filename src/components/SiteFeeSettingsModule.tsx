@@ -196,16 +196,22 @@ export const SiteFeeSettingsModule: React.FC<SiteFeeSettingsModuleProps> = ({
     alert('Settings reset to default values.');
   };
 
-  // Simulator calculations
-  const orderGrossValue = simOrderAmount;
-  const buyerServiceSurcharge = Number((orderGrossValue * (clientServiceFee / 100)).toFixed(2));
-  const smallOrderFeeApplies = orderGrossValue < smallOrderFeeThreshold;
-  const smallOrderFeeToApply = smallOrderFeeApplies ? smallOrderFeeAmount : 0;
-  const buyerPaysAtCheckout = orderGrossValue + buyerServiceSurcharge + smallOrderFeeToApply;
-  const platformTakeRateDeduction = Number((orderGrossValue * (takeRate / 100)).toFixed(2));
-  const freelancerNetPayout = orderGrossValue - platformTakeRateDeduction;
-  const totalPlatformMargin = buyerServiceSurcharge + platformTakeRateDeduction + smallOrderFeeToApply;
-  const netMarginPercent = ((totalPlatformMargin / buyerPaysAtCheckout) * 100).toFixed(1);
+  // Simulator calculations using canonical calculation
+  const simFees = calculateOrderFees(simOrderAmount, {
+    commissionPercent: takeRate,
+    buyerFeePercent: clientServiceFee,
+    smallOrderFee: smallOrderFeeAmount,
+    smallOrderThreshold: smallOrderFeeThreshold
+  });
+  const orderGrossValue = simFees.gigPrice;
+  const buyerServiceSurcharge = simFees.serviceFee;
+  const smallOrderFeeApplies = simFees.smallOrderFee > 0;
+  const smallOrderFeeToApply = simFees.smallOrderFee;
+  const buyerPaysAtCheckout = simFees.clientTotal;
+  const platformTakeRateDeduction = simFees.platformCommission;
+  const freelancerNetPayout = simFees.freelancerNet;
+  const totalPlatformMargin = simFees.platformRevenue;
+  const netMarginPercent = buyerPaysAtCheckout > 0 ? ((totalPlatformMargin / buyerPaysAtCheckout) * 100).toFixed(1) : '0.0';
 
   return (
     <div className="space-y-6 font-sans">

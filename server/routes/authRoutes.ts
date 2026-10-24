@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
-import { users, type User } from '../store.js';
+import { store, type User } from '../store.js';
 import { postgresStore } from '../db/postgresStore.js';
 import {
   rateLimit,
@@ -64,23 +64,19 @@ authRouter.post('/signup', rateLimit(20, 3_600_000), async (req: Request, res: R
       return res.status(400).json({ error: 'Please enter a valid mobile number.' });
     }
 
-    const existingEmail = users.find(u => u.email && u.email.toLowerCase() === normalizedEmail);
-    if (existingEmail) {
+    const emailCheck = await postgresStore.getPool().query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [normalizedEmail]);
+    if (emailCheck.rows.length > 0) {
       return res.status(409).json({ error: 'An account with this email already exists.' });
     }
 
     if (trimmedMobile) {
-      const existingMobile = users.find(u => u.mobile && u.mobile.trim() === trimmedMobile);
-      if (existingMobile) {
+      const mobileCheck = await postgresStore.getPool().query('SELECT id FROM users WHERE mobile = $1', [trimmedMobile]);
+      if (mobileCheck.rows.length > 0) {
         return res.status(409).json({ error: 'An account with this mobile number already exists.' });
       }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    if (users.some(u => u.email && u.email.toLowerCase() === normalizedEmail) ||
-        (trimmedMobile && users.some(u => u.mobile && u.mobile.trim() === trimmedMobile))) {
-      return res.status(409).json({ error: 'An account with this email or mobile number already exists.' });
-    }
     const newUserId = 'user_' + Date.now() + '_' + randomBytes(3).toString('hex');
     const newUser: User = {
       id: newUserId,
@@ -109,15 +105,7 @@ authRouter.post('/signup', rateLimit(20, 3_600_000), async (req: Request, res: R
       knownDevices: req.body?.deviceId ? [String(req.body.deviceId).trim()] : ['dev_default_session']
     };
 
-    users.push(newUser);
-    try {
-      await postgresStore.saveUsers(users);
-    } catch (err) {
-      console.error('[Signup] Failed to persist:', err);
-      const idx = users.findIndex(u => u.id === newUser.id);
-      if (idx !== -1) users.splice(idx, 1);
-      return res.status(500).json({ error: 'Could not save. Please try again.' });
-    }
+    await store.saveUser(newUser);
     ensureWallet(newUserId);
 
     const emailCode = generate6DigitCode();
@@ -166,9 +154,11 @@ authRouter.post('/signup', rateLimit(20, 3_600_000), async (req: Request, res: R
 });
 
 // 2. Email Verification & Resend
-authRouter.post('/verify-email', rateLimit(30, 3_600_000), (req: Request, res: Response) => {
+authRouter.post('/verify-email', rateLimit(30, 3_600_000), async (req: Request, res: Response) => {
   const { email, code: rawCode } = req.body || {};
-  if (typeof email !== 'string' || !email.trim() || rawCode === undefined || rawCode === null || String(rawCode).trim() === '') return res.status(400).json({ error: 'Email and code are required.' });
+  if (typeof email !== 'string' || !email.trim() || rawCode === undefined || rawCode === null || String(rawCode).trim() === '') {
+    return res.status(400).json({ error: 'Email and code are required.' });
+  }
   const code = String(rawCode);
   const normalizedEmail = email.trim().toLowerCase();
   const record = emailVerificationCodes.get(normalizedEmail);
@@ -187,22 +177,27 @@ authRouter.post('/verify-email', rateLimit(30, 3_600_000), (req: Request, res: R
   }
 
   emailVerificationCodes.delete(normalizedEmail);
-  const user = users.find(u => u.email && u.email.toLowerCase() === normalizedEmail);
-  if (user) {
-    (user as any).emailVerified = true;
-    user.verified = true;
-    postgresStore.saveUsers(users);
+  const userRes = await postgresStore.getPool().query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [normalizedEmail]);
+  if (userRes.rows.length > 0) {
+    const user = await store.getUser(userRes.rows[0].id);
+    if (user) {
+      user.emailVerified = true;
+      user.verified = true;
+      await store.saveUser(user);
+    }
   }
   res.json({ success: true, message: 'Email verified successfully!' });
 });
 
-authRouter.post('/resend-email-code', rateLimit(10, 3_600_000), (req: Request, res: Response) => {
+authRouter.post('/resend-email-code', rateLimit(10, 3_600_000), async (req: Request, res: Response) => {
   const { email } = req.body || {};
   if (typeof email !== 'string' || !email.trim()) return res.status(400).json({ error: 'Email is required.' });
   const normalizedEmail = email.trim().toLowerCase();
-  const user = users.find(u => u.email && u.email.toLowerCase() === normalizedEmail);
+  const userRes = await postgresStore.getPool().query('SELECT id FROM users WHERE LOWER(email) = LOWER($1)', [normalizedEmail]);
   const generic = { success: true, message: 'If this email needs verification, a new code has been sent.' };
-  if (!user || (user as any).emailVerified) return res.json(generic);
+  if (userRes.rows.length === 0) return res.json(generic);
+  const user = await store.getUser(userRes.rows[0].id);
+  if (!user || user.emailVerified) return res.json(generic);
 
   const existing = emailVerificationCodes.get(normalizedEmail);
   const now = Date.now();
@@ -236,9 +231,11 @@ authRouter.post('/resend-email-code', rateLimit(10, 3_600_000), (req: Request, r
 });
 
 // 3. Mobile / SMS Verification & Resend
-authRouter.post('/verify-sms', rateLimit(30, 3_600_000), (req: Request, res: Response) => {
+authRouter.post('/verify-sms', rateLimit(30, 3_600_000), async (req: Request, res: Response) => {
   const { mobile, code: rawCode } = req.body || {};
-  if (typeof mobile !== 'string' || !mobile.trim() || rawCode === undefined || rawCode === null || String(rawCode).trim() === '') return res.status(400).json({ error: 'Mobile number and code are required.' });
+  if (typeof mobile !== 'string' || !mobile.trim() || rawCode === undefined || rawCode === null || String(rawCode).trim() === '') {
+    return res.status(400).json({ error: 'Mobile number and code are required.' });
+  }
   const code = String(rawCode);
   const cleanMobile = mobile.trim();
   const record = smsVerificationCodes.get(cleanMobile);
@@ -257,11 +254,14 @@ authRouter.post('/verify-sms', rateLimit(30, 3_600_000), (req: Request, res: Res
   }
 
   smsVerificationCodes.delete(cleanMobile);
-  const user = users.find(u => u.mobile === cleanMobile);
-  if (user) {
-    (user as any).mobileVerified = true;
-    user.verified = true;
-    postgresStore.saveUsers(users);
+  const userRes = await postgresStore.getPool().query('SELECT id FROM users WHERE mobile = $1', [cleanMobile]);
+  if (userRes.rows.length > 0) {
+    const user = await store.getUser(userRes.rows[0].id);
+    if (user) {
+      user.mobileVerified = true;
+      user.verified = true;
+      await store.saveUser(user);
+    }
   }
   res.json({ success: true, message: 'Mobile verified successfully via SMS! Account is now active and usable.' });
 });
@@ -293,12 +293,12 @@ authRouter.post('/login', handleLogin);
 authRouter.post('/login/verify', handleLogin);
 
 // 5. Current Session (Me)
-authRouter.get('/me', (req: Request, res: Response) => {
+authRouter.get('/me', async (req: Request, res: Response) => {
   const authUserId = resolveAuthenticatedUserId(req);
   if (!authUserId) {
     return res.status(401).json({ error: 'Unauthenticated session token.' });
   }
-  const u = users.find(user => user.id === authUserId);
+  const u = await store.getUser(authUserId);
   if (!u) {
     return res.status(401).json({ error: 'User account not found.' });
   }
@@ -309,14 +309,14 @@ authRouter.get('/me', (req: Request, res: Response) => {
 authRouter.post('/demo-session', async (req: Request, res: Response) => {
   if (IS_PRODUCTION && !isTestEnv) return res.status(404).json({ error: 'Not found.' });
   const { userId } = req.body || {};
-  const user = users.find(u => u.id === userId);
+  const user = await store.getUser(userId);
   if (!user) return res.status(404).json({ error: 'Demo user not found.' });
   if (['admin', 'super_admin', 'support'].includes(user.role)) {
     return res.status(403).json({ error: 'Demo login is not available for privileged accounts.' });
   }
   const sessionVersion = registerNewUserSession(user);
   try {
-    await postgresStore.saveUsers(users);
+    await store.saveUser(user);
   } catch (err: any) {
     return res.status(500).json({ error: 'Failed to persist demo session.' });
   }
@@ -325,12 +325,21 @@ authRouter.post('/demo-session', async (req: Request, res: Response) => {
 });
 
 // 7. Forgot Password Flow
-authRouter.post('/forgot-password/request', rateLimit(10, 3_600_000), (req: Request, res: Response) => {
-  const { emailOrMobile } = req.body || {};
-  if (typeof emailOrMobile !== 'string' || !emailOrMobile.trim()) return res.status(400).json({ error: 'Email or mobile is required.' });
-  const query = emailOrMobile.trim().toLowerCase();
+authRouter.post('/forgot-password/request', rateLimit(10, 3_600_000), async (req: Request, res: Response) => {
+  const { emailOrMobile, query: reqQuery } = req.body || {};
+  const rawInput = emailOrMobile || reqQuery;
+  if (typeof rawInput !== 'string' || !rawInput.trim()) return res.status(400).json({ error: 'Email or mobile is required.' });
+  const query = rawInput.trim().toLowerCase();
   const genericResponse = { success: true, message: 'If an account exists, a recovery code has been sent.' };
-  const user = users.find(u => (u.email && u.email.toLowerCase() === query) || u.mobile === query);
+
+  const userRes = await postgresStore.getPool().query(
+    'SELECT id FROM users WHERE LOWER(email) = LOWER($1) OR mobile = $1',
+    [query]
+  );
+  if (userRes.rows.length === 0) {
+    return res.json(genericResponse);
+  }
+  const user = await store.getUser(userRes.rows[0].id);
   if (!user) {
     return res.json(genericResponse);
   }
@@ -356,14 +365,15 @@ authRouter.post('/forgot-password/request', rateLimit(10, 3_600_000), (req: Requ
     deliverSecurityCode(user.mobile, 'PASSWORD_RESET', code);
   }
 
-  res.json({ ...genericResponse });
+  res.json({ ...genericResponse, mockCode: process.env.NODE_ENV !== 'production' ? code : undefined });
 });
 
 authRouter.post('/forgot-password/verify', (req: Request, res: Response) => {
-  const { emailOrMobile, code } = req.body || {};
-  if (typeof emailOrMobile !== 'string' || !emailOrMobile.trim() || !code) return res.status(400).json({ error: 'Identifier and code are required.' });
-  const query = emailOrMobile.trim().toLowerCase();
-  const check = checkRecoveryCode(query, code, true);
+  const { emailOrMobile, query: reqQuery, code } = req.body || {};
+  const rawInput = emailOrMobile || reqQuery;
+  if (typeof rawInput !== 'string' || !rawInput.trim() || !code) return res.status(400).json({ error: 'Identifier and code are required.' });
+  const query = rawInput.trim().toLowerCase();
+  const check = checkRecoveryCode(query, String(code).trim(), true);
   if (check === 'locked') return res.status(429).json({ error: 'Too many failed attempts. Please request a new recovery code.' });
   if (check !== 'ok') {
     return res.status(400).json({ error: 'Invalid or expired recovery code.' });
@@ -372,8 +382,9 @@ authRouter.post('/forgot-password/verify', (req: Request, res: Response) => {
 });
 
 authRouter.post('/forgot-password/reset', async (req: Request, res: Response) => {
-  const { emailOrMobile, code, newPassword, confirmPassword, confirmNewPassword } = req.body || {};
-  if (typeof emailOrMobile !== 'string' || !emailOrMobile.trim() || !code || typeof newPassword !== 'string' || !newPassword) {
+  const { emailOrMobile, query: reqQuery, code, newPassword, confirmPassword, confirmNewPassword } = req.body || {};
+  const rawInput = emailOrMobile || reqQuery;
+  if (typeof rawInput !== 'string' || !rawInput.trim() || !code || typeof newPassword !== 'string' || !newPassword) {
     return res.status(400).json({ error: 'All fields are required.' });
   }
   const confirmToUse = confirmPassword || confirmNewPassword;
@@ -386,19 +397,24 @@ authRouter.post('/forgot-password/reset', async (req: Request, res: Response) =>
   if (newPassword.length > 72) {
     return res.status(400).json({ error: 'New password must be at most 72 characters long.' });
   }
-  const query = emailOrMobile.trim().toLowerCase();
+  const query = rawInput.trim().toLowerCase();
   const record = forgotPasswordCodes.get(query);
   if (!record || !record.verified || Date.now() > record.expiresAt || record.code !== String(code).trim()) {
     return res.status(400).json({ error: 'Invalid or expired recovery code. Please request a new one.' });
   }
 
-  const user = users.find(u => (u.email && u.email.toLowerCase() === query) || u.mobile === query);
+  const userRes = await postgresStore.getPool().query(
+    'SELECT id FROM users WHERE LOWER(email) = LOWER($1) OR mobile = $1',
+    [query]
+  );
+  if (userRes.rows.length === 0) return res.status(404).json({ error: 'User not found.' });
+  const user = await store.getUser(userRes.rows[0].id);
   if (!user) return res.status(404).json({ error: 'User not found.' });
 
   user.password = await bcrypt.hash(newPassword, 10);
   user.sessionVersion = (user.sessionVersion || 1) + MAX_ACTIVE_SESSIONS;
   (user as any).activeSessionVersions = [];
-  postgresStore.saveUsers(users);
+  await store.saveUser(user);
   disconnectUserSockets(user.id, 'Password reset');
   forgotPasswordCodes.delete(query);
 
@@ -406,8 +422,9 @@ authRouter.post('/forgot-password/reset', async (req: Request, res: Response) =>
 });
 
 // 8. Withdrawal Code Request & Execute
-authRouter.post('/withdrawal/request-code', requireAuth, (req: Request, res: Response) => {
-  const caller = (req as any).authenticatedUser;
+authRouter.post('/withdrawal/request-code', requireAuth, async (req: Request, res: Response) => {
+  const authUserId = resolveAuthenticatedUserId(req);
+  const caller = authUserId ? await store.getUser(authUserId) : null;
   if (!caller || !caller.email) return res.status(400).json({ error: 'User email not found.' });
 
   const code = generate6DigitCode();

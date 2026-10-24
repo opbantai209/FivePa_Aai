@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { X, RefreshCw, CheckCircle2, Shield, Users } from 'lucide-react';
 import { UserAccount } from '../../types';
 import { setAuthToken, requestDemoSession } from '../../utils/authToken';
+import { DEFAULT_AVATAR } from '../../constants';
 
 interface UserSwitchModalProps {
   isOpen: boolean;
@@ -97,9 +98,12 @@ export const UserSwitchModal: React.FC<UserSwitchModalProps> = ({
                 >
                   <div className="flex items-center gap-3 min-w-0">
                     <img 
-                      src={user.avatar} 
+                      src={user.avatar || DEFAULT_AVATAR} 
                       alt={user.name} 
                       className="w-10 h-10 rounded-full object-cover border border-slate-200 shrink-0" 
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = DEFAULT_AVATAR;
+                      }}
                     />
                     <div className="min-w-0">
                       <div className="flex items-center gap-2">
